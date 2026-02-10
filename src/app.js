@@ -1,5 +1,6 @@
 import express from 'express';
 import cors from 'cors';
+import billingRoutes from './routes/billing.routes.js';
 import appsRoutes from './routes/apps.routes.js';
 import keysRoutes from './routes/keys.routes.js';
 import authRoutes from './routes/auth.routes.js';
@@ -38,6 +39,16 @@ app.use(
   requireApiKey,
   rateLimit('user'),
   appsRoutes
+);
+
+/**
+ * Billing routes (API key protected)
+ */
+app.use(
+  '/billing',
+  requireApiKey,
+  rateLimit('user'),
+  billingRoutes
 );
 
 export default app;

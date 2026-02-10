@@ -18,7 +18,18 @@ class K8sService {
     });
   }
 
-  async createQuota(namespace) {
+  async createQuota(namespace, plan) {
+    const cpu = plan?.cpu || '500m';
+    const memory = plan?.memory || '512Mi';
+    // For quota, maybe give a bit more buffer or strict?
+    // Let's set the quota to the plan limit for now (assuming 1 replica)
+    // or maybe 2x to allow rolling updates?
+    // Let's simplify: hard limit same as Pod limit * 2 for buffer
+
+    // We need to parse units properly to multiply, but k8s handles strings.
+    // For simplicity, let's just set a generous hard quota or match the plan.
+    // Actually, let's hardcode a default "User Quota" or per-namespace quota matching the plan.
+
     await this.core.createNamespacedResourceQuota({
       namespace,
       body: {
@@ -27,8 +38,10 @@ class K8sService {
         },
         spec: {
           hard: {
-            'requests.cpu': '500m',
-            'requests.memory': '512Mi',
+            'requests.cpu': cpu,
+            'requests.memory': memory,
+            'limits.cpu': cpu,
+            'limits.memory': memory,
             pods: '2'
           }
         }
@@ -36,7 +49,10 @@ class K8sService {
     });
   }
 
-  async createDeployment({ namespace, image, port }) {
+  async createDeployment({ namespace, image, port, plan }) {
+    const cpu = plan?.cpu || '100m';
+    const memory = plan?.memory || '128Mi';
+
     await this.apps.createNamespacedDeployment({
       namespace,
       body: {
@@ -54,8 +70,12 @@ class K8sService {
                   ports: [{ containerPort: port }],
                   resources: {
                     requests: {
-                      cpu: '100m',
-                      memory: '128Mi'
+                      cpu: cpu,
+                      memory: memory
+                    },
+                    limits: {
+                      cpu: cpu,
+                      memory: memory
                     }
                   }
                 }
@@ -87,10 +107,12 @@ class K8sService {
         metadata: {
           name: 'app',
           annotations: {
-            'kubernetes.io/ingress.class': 'traefik'
+            'kubernetes.io/ingress.class': 'traefik',
+            'traefik.ingress.kubernetes.io/router.entrypoints': 'web'
           }
         },
         spec: {
+          ingressClassName: 'traefik',
           rules: [
             {
               host,

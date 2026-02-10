@@ -1,5 +1,6 @@
 import fetch from 'node-fetch';
-import { createApiKey, getApiKeyByName } from '../models/apiKey.model.js';
+import { createUser, getUserByEmail } from '../models/user.model.js';
+import { createApiKey, getApiKeyByName, getApiKey } from '../models/apiKey.model.js';
 
 // POST /auth/google
 // body: { id_token }
@@ -24,28 +25,45 @@ export const googleSignIn = async (req, res) => {
     const payload = await verifyRes.json();
 
     // tokeninfo returns fields like email, email_verified
-    const { email, email_verified } = payload;
+    const { email, email_verified, sub: googleId } = payload;
 
-    if (!email || email_verified !== 'true' && email_verified !== true) {
+    if (!email || (email_verified !== 'true' && email_verified !== true)) {
       return res.status(401).json({ error: 'email not verified' });
     }
 
-    // check if a key already exists for this email; if so, refuse to reveal
-    const existing = getApiKeyByName(email);
-    if (existing) {
-      return res.status(409).json({
-        error:
-          'API key for this account already exists. Contact admin to re-issue.'
-      });
+    let user = getUserByEmail(email);
+    if (!user) {
+      user = createUser(googleId, email);
     }
 
-    // create a new API key with the user's email as name
-    const key = createApiKey(email);
+    // For backward compatibility / ease of use, we can still issue an API Key for this user
+    // In a real app we'd use a JWT session for the frontend.
+    // For this MVP, let's link an API key to the email (which is unique per user).
+    // If key exists, return it. If not, create it.
+    // Note: Ideally we should link keys to user_id, but our legacy scheme binds to name/email.
+    // Let's stick to the existing apiKey model for the "token" part, but return the User object.
 
-    // return the key once (client should save it securely)
-    return res.status(201).json({ key, email });
+    let keyRecord = getApiKeyByName(email);
+    let key;
+    if (keyRecord) {
+      key = keyRecord.key;
+    } else {
+      key = createApiKey(email);
+    }
+
+    // Return the key and the user object
+    return res.status(200).json({
+      key,
+      user: {
+        id: user.id,
+        email: user.email,
+        balance: user.balance
+      }
+    });
+
   } catch (err) {
     console.error('googleSignIn error', err?.message || err);
     return res.status(500).json({ error: 'server error' });
   }
 };
+
