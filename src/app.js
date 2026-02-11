@@ -24,13 +24,13 @@ app.get('/health', (_req, res) => {
 });
 
 // auth (google sign-in)
-app.use('/auth', authRoutes);
+app.use('/api/auth', authRoutes);
 
 /**
  * Admin-only routes
  */
 app.use(
-  '/keys',
+  '/api/keys',
   requireAdminKey,
   rateLimit('admin'),
   keysRoutes
@@ -40,19 +40,17 @@ app.use(
  * App routes (API key protected)
  */
 app.use(
-  '/apps',
+  '/api/apps',
   requireApiKey,
   rateLimit('user'),
   appsRoutes
 );
 
 /**
- * Billing routes (API key protected)
+ * Billing routes (Mixed protection)
  */
 app.use(
-  '/billing',
-  requireApiKey,
-  rateLimit('user'),
+  '/api/billing',
   billingRoutes
 );
 
