@@ -23,7 +23,7 @@ export const createApp = async (req, res) => {
     }
 
     // Sanitize name for k8s (lowercase, alphanumeric and hyphens only)
-    const sanitizedName = name.toLowerCase().replace(/[^a-z0-t0-9]/g, '-').replace(/-+/g, '-').replace(/^-|-$/g, '');
+    const sanitizedName = name.toLowerCase().replace(/[^a-z0-9]/g, '-').replace(/-+/g, '-').replace(/^-|-$/g, '');
 
     // Checking plan
     const plan = getPlanById(planId);

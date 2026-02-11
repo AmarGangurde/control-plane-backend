@@ -11,8 +11,13 @@ import { rateLimit } from './middleware/rateLimit.js';
 const app = express();
 
 app.use(express.json());
-// enable CORS for local frontend during development
-app.use(cors());
+// Configure CORS (more secure for production)
+const frontendUrl = process.env.FRONTEND_URL || 'http://localhost:5173';
+app.use(cors({
+  origin: frontendUrl,
+  methods: ['GET', 'POST', 'PUT', 'DELETE'],
+  allowedHeaders: ['Content-Type', 'Authorization']
+}));
 
 app.get('/health', (_req, res) => {
   res.json({ status: 'ok' });

@@ -8,6 +8,7 @@ class K8sService {
     kc.loadFromDefault();
 
     this.core = kc.makeApiClient(k8s.CoreV1Api);
+    logger.info('K8s client initialized', { server: kc.getCurrentCluster()?.server });
     this.apps = kc.makeApiClient(k8s.AppsV1Api);
     this.net = kc.makeApiClient(k8s.NetworkingV1Api);
   }
@@ -176,7 +177,7 @@ class K8sService {
     try {
       // ensure we pass a plain string
       const nsName = String(name);
-      await this.core.deleteNamespace(nsName);
+      await this.core.deleteNamespace({ name: nsName });
     } catch (err) {
       logger.error('k8s.deleteNamespace error', err?.message || err, err?.stack);
 
