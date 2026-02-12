@@ -2,12 +2,12 @@ services:
   control-plane:
     build: .
     image: control-plane-backend:latest
-    container_name: control-plane
-    ports:
-      - "3000:3000"
+    container_name: backend-app
+    network_mode: host
     volumes:
-      - ./data:/app/data
-    env_file: .env
+      - /home/ubuntu/data:/app/data
+      - /home/ubuntu/.kube/config:/root/.kube/config:ro
+      - /home/ubuntu/.env:/app/.env:ro
     restart: always
     logging:
       driver: "json-file"

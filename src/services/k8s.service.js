@@ -7,8 +7,17 @@ class K8sService {
     const kc = new k8s.KubeConfig();
     kc.loadFromDefault();
 
+    // Fix for production "HTTP protocol not allowed" error
+    const cluster = kc.getCurrentCluster();
+    if (cluster && (cluster.server.includes('localhost') || cluster.server.includes('127.0.0.1'))) {
+      cluster.skipTLSVerify = true;
+    }
+
     this.core = kc.makeApiClient(k8s.CoreV1Api);
-    logger.info('K8s client initialized', { server: kc.getCurrentCluster()?.server });
+    logger.info('K8s client initialized', {
+      server: cluster?.server,
+      skipTLS: cluster?.skipTLSVerify
+    });
     this.apps = kc.makeApiClient(k8s.AppsV1Api);
     this.net = kc.makeApiClient(k8s.NetworkingV1Api);
     this.metrics = kc.makeApiClient(k8s.CustomObjectsApi);
