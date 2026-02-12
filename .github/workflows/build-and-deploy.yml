@@ -63,8 +63,8 @@ jobs:
             docker run -d \
               --name "${APP_NAME}-green" \
               -p $NEW_PORT:3000 \
-              -v /home/${{ secrets.EC2_USER }}/data:/app/data \
-              --env-file /home/${{ secrets.EC2_USER }}/.env \
+              -v /home/ubuntu/data:/app/data \
+              --env-file /home/ubuntu/.env \
                $IMAGE_ID:$VERSION
 
             echo "⏳ Verifying new container..."
@@ -81,12 +81,21 @@ jobs:
                 # For this demo, we swap containers
                 docker stop $APP_NAME || true
                 docker rm $APP_NAME || true
-                docker rename "${APP_NAME}-green" $APP_NAME
+                docker rename "${APP_NAME}-green" $APP_NAME || true
                 
-                # Re-run on primary port for long-term consistency
-                docker stop $APP_NAME
-                docker rm $APP_NAME
-                docker run -d --restart unless-stopped --name $APP_NAME -p $OLD_PORT:3000 -v /home/${{ secrets.EC2_USER }}/data:/app/data --env-file /home/${{ secrets.EC2_USER }}/.env $IMAGE_ID:$VERSION
+                # Final production run with correct networking and volumes
+                docker stop $APP_NAME || true
+                docker rm $APP_NAME || true
+                docker run -d \
+                  --restart unless-stopped \
+                  --name $APP_NAME \
+                  --network host \
+                  -e NODE_ENV=production \
+                  -v /home/ubuntu/data:/app/data \
+                  -v /home/ubuntu/.kube/config:/home/node/.kube/config:ro \
+                  -v /home/ubuntu/.kube/config:/app/k3s.yaml:ro \
+                  -v /home/ubuntu/.env:/app/.env:ro \
+                  $IMAGE_ID:$VERSION
                 
                 echo "🏁 Deployment successful!"
             else
