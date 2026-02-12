@@ -5,9 +5,9 @@ services:
     container_name: backend-app
     network_mode: host
     volumes:
-      - /home/ubuntu/data:/app/data
+      - ./data:/app/data
       - /home/ubuntu/.kube/config:/root/.kube/config:ro
-      - /home/ubuntu/.env:/app/.env:ro
+      - ./.env:/app/.env:ro
     restart: always
     logging:
       driver: "json-file"

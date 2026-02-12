@@ -5,9 +5,20 @@ import { execSync } from 'child_process';
 class K8sService {
   constructor() {
     const kc = new k8s.KubeConfig();
-    kc.loadFromDefault();
 
-    // Fix for production "HTTP protocol not allowed" error
+    try {
+      // In Docker, we map the host config to /root/.kube/config
+      const isProd = process.env.NODE_ENV === 'production';
+      if (isProd) {
+        kc.loadFromFile('/root/.kube/config');
+      } else {
+        kc.loadFromDefault();
+      }
+    } catch (err) {
+      logger.error('Failed to load KubeConfig, falling back to default', err.message);
+      kc.loadFromDefault();
+    }
+
     const cluster = kc.getCurrentCluster();
     if (cluster && (cluster.server.includes('localhost') || cluster.server.includes('127.0.0.1'))) {
       cluster.skipTLSVerify = true;
