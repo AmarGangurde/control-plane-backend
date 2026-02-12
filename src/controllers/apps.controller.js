@@ -11,10 +11,11 @@ import {
 import { getPlanById } from '../models/plan.model.js';
 import { updateUserBalance } from '../models/user.model.js';
 import { killAppCompletely } from '../services/app.service.js';
+import imageService from '../services/image.service.js';
 
 export const createApp = async (req, res) => {
   try {
-    const { image, port, planId = 'p-small', name } = req.body;
+    const { image, port, planId = 'p-small', name, env, command, args } = req.body;
     const apiKey = req.apiKey;
     const user = req.user;
 
@@ -47,11 +48,18 @@ export const createApp = async (req, res) => {
       });
     }
 
-    if (!image || !port) {
+    if (!image) {
       return res.status(400).json({
-        error: 'image and port are required'
+        error: 'image is required'
       });
     }
+
+    // Auto-detect port from image if not provided
+    let containerPort = port;
+    if (!containerPort) {
+      containerPort = await imageService.getExposedPort(image);
+    }
+    const servicePort = 80;
 
     // Deduct initial charge
     updateUserBalance(user.id, -plan.price_per_hour);
@@ -69,9 +77,9 @@ export const createApp = async (req, res) => {
     await k8sService.createNamespace(namespace);
     // Pass plan resources
     await k8sService.createQuota(namespace, plan);
-    await k8sService.createDeployment({ namespace, image, port, plan });
-    await k8sService.createService({ namespace, port });
-    await k8sService.createIngress({ namespace, host, port });
+    await k8sService.createDeployment({ namespace, image, containerPort, plan, env, command, args });
+    await k8sService.createService({ namespace, servicePort, containerPort });
+    await k8sService.createIngress({ namespace, host, port: servicePort });
 
     insertApp({
       id: appId,
@@ -81,7 +89,11 @@ export const createApp = async (req, res) => {
       url,
       apiKey,
       userId: user.id,
-      planId: plan.id
+      planId: plan.id,
+      containerPort,
+      env,
+      command,
+      args
     });
 
     res.status(201).json({
@@ -111,7 +123,19 @@ export const getApp = async (req, res) => {
   }
 
   const status = await k8sService.getAppStatus(app.namespace);
-  res.json({ ...app, status });
+  const metrics = await k8sService.getPodMetrics(app.namespace);
+  res.json({ ...app, status, metrics });
+};
+
+export const getAppLogs = async (req, res) => {
+  const app = getAppById(req.params.id);
+
+  if (!app || app.api_key !== req.apiKey) {
+    return res.status(404).json({ error: 'app not found' });
+  }
+
+  const logs = await k8sService.getLogs(app.namespace);
+  res.json({ logs });
 };
 
 

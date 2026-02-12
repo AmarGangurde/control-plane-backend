@@ -11,6 +11,33 @@ class K8sService {
     logger.info('K8s client initialized', { server: kc.getCurrentCluster()?.server });
     this.apps = kc.makeApiClient(k8s.AppsV1Api);
     this.net = kc.makeApiClient(k8s.NetworkingV1Api);
+    this.metrics = kc.makeApiClient(k8s.CustomObjectsApi);
+  }
+
+  async getPodMetrics(namespace) {
+    try {
+      // Fetch metrics from metrics.k8s.io
+      const res = await this.metrics.listNamespacedCustomObject({
+        group: 'metrics.k8s.io',
+        version: 'v1beta1',
+        namespace,
+        plural: 'pods'
+      });
+
+      const podMetrics = res.items[0];
+      if (!podMetrics || !podMetrics.containers || !podMetrics.containers[0]) {
+        return { cpu: '0', memory: '0' };
+      }
+
+      const usage = podMetrics.containers[0].usage;
+      return {
+        cpu: usage.cpu, // e.g., "100m" or "1000000n"
+        memory: usage.memory // e.g., "128Mi" or "131072Ki"
+      };
+    } catch (err) {
+      // Metrics server might not be installed or pod might not have metrics yet
+      return { cpu: '0', memory: '0' };
+    }
   }
 
   async createNamespace(name) {
@@ -50,9 +77,31 @@ class K8sService {
     });
   }
 
-  async createDeployment({ namespace, image, port, plan }) {
+  async createDeployment({ namespace, image, containerPort, plan, env, command, args }) {
     const cpu = plan?.cpu || '100m';
     const memory = plan?.memory || '128Mi';
+
+    const container = {
+      name: 'app',
+      image,
+      ports: [{ containerPort }],
+      resources: {
+        requests: { cpu, memory },
+        limits: { cpu, memory }
+      }
+    };
+
+    if (env && Array.isArray(env)) {
+      container.env = env;
+    }
+
+    if (command && Array.isArray(command)) {
+      container.command = command;
+    }
+
+    if (args && Array.isArray(args)) {
+      container.args = args;
+    }
 
     await this.apps.createNamespacedDeployment({
       namespace,
@@ -64,23 +113,7 @@ class K8sService {
           template: {
             metadata: { labels: { app: 'app' } },
             spec: {
-              containers: [
-                {
-                  name: 'app',
-                  image,
-                  ports: [{ containerPort: port }],
-                  resources: {
-                    requests: {
-                      cpu: cpu,
-                      memory: memory
-                    },
-                    limits: {
-                      cpu: cpu,
-                      memory: memory
-                    }
-                  }
-                }
-              ]
+              containers: [container]
             }
           }
         }
@@ -88,14 +121,14 @@ class K8sService {
     });
   }
 
-  async createService({ namespace, port }) {
+  async createService({ namespace, servicePort, containerPort }) {
     await this.core.createNamespacedService({
       namespace,
       body: {
         metadata: { name: 'app' },
         spec: {
           selector: { app: 'app' },
-          ports: [{ port, targetPort: port }]
+          ports: [{ port: servicePort, targetPort: containerPort }]
         }
       }
     });
@@ -164,6 +197,40 @@ class K8sService {
     if (phase === 'Failed') return 'failed';
 
     return 'unknown';
+  }
+
+  async getLogs(namespace) {
+    try {
+      const res = await this.core.listNamespacedPod({ namespace });
+      if (!res.items.length) return 'No pods found in namespace.';
+
+      const pod = res.items[0];
+      const podName = pod.metadata.name;
+      const phase = pod.status.phase;
+
+      // Check if pod is still pending or creating
+      const containerStatus = pod.status.containerStatuses?.[0];
+      if (phase === 'Pending' || containerStatus?.state?.waiting) {
+        return `[System] Container is starting up (${containerStatus?.state?.waiting?.reason || 'Creating'})...`;
+      }
+
+      const logsRes = await this.core.readNamespacedPodLog({
+        name: podName,
+        namespace,
+        tailLines: 100 // Get last 100 lines
+      });
+
+      return logsRes;
+    } catch (err) {
+      // Handle the specific k8s error when container is not yet ready
+      const body = err.response?.body || err.body;
+      if (body?.message?.includes('waiting to start')) {
+        return '[System] Container is initializing. Logs will be available in a few seconds...';
+      }
+
+      logger.error('Error fetching logs', err?.message || err);
+      return `Error fetching logs: ${err?.message || 'Unknown error'}`;
+    }
   }
 
   async deleteNamespace(name) {

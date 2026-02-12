@@ -92,6 +92,10 @@ db.prepare(`
     namespace TEXT NOT NULL,
     image TEXT NOT NULL,
     url TEXT NOT NULL,
+    container_port INTEGER,
+    env TEXT, -- JSON string
+    command TEXT, -- JSON string
+    args TEXT, -- JSON string
     api_key TEXT,
     created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
     last_charged_at DATETIME DEFAULT CURRENT_TIMESTAMP,
@@ -99,6 +103,22 @@ db.prepare(`
     FOREIGN KEY (plan_id) REFERENCES plans(id)
   )
 `).run();
+
+// Migration: Ensure new columns exist
+try {
+  db.prepare('ALTER TABLE apps ADD COLUMN env TEXT').run();
+} catch (e) { }
+try {
+  db.prepare('ALTER TABLE apps ADD COLUMN command TEXT').run();
+} catch (e) { }
+try {
+  db.prepare('ALTER TABLE apps ADD COLUMN args TEXT').run();
+} catch (e) { }
+
+// Migration: Ensure container_port exists
+try {
+  db.prepare('ALTER TABLE apps ADD COLUMN container_port INTEGER').run();
+} catch (e) { }
 
 // Migration: Ensure last_charged_at and name exists for existing apps
 try {
