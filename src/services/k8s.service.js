@@ -7,10 +7,10 @@ class K8sService {
     const kc = new k8s.KubeConfig();
 
     try {
-      // In Docker, we map the host config to /root/.kube/config
+      // In Docker, we map the host config to /home/node/.kube/config
       const isProd = process.env.NODE_ENV === 'production';
       if (isProd) {
-        kc.loadFromFile('/root/.kube/config');
+        kc.loadFromFile('/home/node/.kube/config');
       } else {
         kc.loadFromDefault();
       }
