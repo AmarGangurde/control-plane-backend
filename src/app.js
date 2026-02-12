@@ -12,11 +12,25 @@ const app = express();
 
 app.use(express.json());
 // Configure CORS (more secure for production)
-const frontendUrl = process.env.FRONTEND_URL || 'http://localhost:5173';
+const allowedOrigins = [
+  'https://wrexer.com',
+  'https://www.wrexer.com',
+  process.env.FRONTEND_URL
+].filter(Boolean);
+
 app.use(cors({
-  origin: frontendUrl,
+  origin: (origin, callback) => {
+    // Allow requests with no origin (like mobile apps or curl)
+    if (!origin) return callback(null, true);
+    if (allowedOrigins.indexOf(origin) !== -1 || origin.endsWith('.wrexer.com')) {
+      callback(null, true);
+    } else {
+      callback(new Error('Not allowed by CORS'));
+    }
+  },
   methods: ['GET', 'POST', 'PUT', 'DELETE'],
-  allowedHeaders: ['Content-Type', 'Authorization']
+  allowedHeaders: ['Content-Type', 'Authorization', 'X-Requested-With'],
+  credentials: true
 }));
 
 app.get('/health', (_req, res) => {
