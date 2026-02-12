@@ -9,6 +9,7 @@ class K8sService {
     const possiblePaths = [
       process.env.KUBECONFIG,
       '/home/node/.kube/config',
+      '/app/k3s.yaml',
       '/app/.kube/config',
       '/app/data/k3s.yaml'
     ];

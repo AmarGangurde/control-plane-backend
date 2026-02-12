@@ -3,11 +3,13 @@ services:
     build: .
     image: control-plane-backend:latest
     container_name: backend-app
+    environment:
+      - NODE_ENV=production
     network_mode: host
     volumes:
       - ./data:/app/data
       - /home/ubuntu/.kube/config:/home/node/.kube/config:ro
-      - /home/ubuntu/.kube/config:/app/data/k3s.yaml:ro
+      - /home/ubuntu/.kube/config:/app/k3s.yaml:ro
       - ./.env:/app/.env:ro
     restart: always
     logging:
