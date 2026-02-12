@@ -1,7 +1,6 @@
 services:
   control-plane:
-    build: .
-    image: control-plane-backend:latest
+    image: ghcr.io/amargangurde/control-plane-backend:latest
     container_name: backend-app
     environment:
       - NODE_ENV=production
