@@ -68,7 +68,7 @@ export const createApp = async (req, res) => {
     // Namespace: name-plan-random
     const namespace = `${sanitizedName}-${planName}-${appId.split('-')[0]}`;
     const host = `${namespace}.${baseDomain}`;
-    const url = `http://${host}`;
+    const url = `https://${host}`;
 
     // 1. Insert stopped app record first
     insertApp({

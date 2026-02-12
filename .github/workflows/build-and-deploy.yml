@@ -13,7 +13,7 @@ jobs:
       packages: write
     env:
       REGISTRY: ghcr.io
-      IMAGE_NAME: ${{ github.repository }}-backend
+      IMAGE_NAME: ${{ github.repository }}
     steps:
       - name: Checkout
         uses: actions/checkout@v4
@@ -28,14 +28,8 @@ jobs:
       - name: Build and push Docker image
         run: |
           IMAGE_ID=${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}
-          # Change all uppercase to lowercase
           IMAGE_ID=$(echo $IMAGE_ID | tr '[A-Z]' '[a-z]')
-          # Strip git ref prefix from version
-          VERSION=$(echo "${{ github.ref }}" | sed -e 's,.*/\(.*\),\1,')
-          # Strip "v" prefix from tag name
-          [[ "${{ github.ref }}" == "refs/tags/"* ]] && VERSION=$(echo $VERSION | sed -e 's/^v//')
-          # Use Docker `latest` tag convention
-          [ "$VERSION" == "main" ] && VERSION=latest
+          VERSION=latest
           echo IMAGE_ID=$IMAGE_ID
           echo VERSION=$VERSION
           docker build . --file Dockerfile --tag $IMAGE_ID:$VERSION
@@ -50,7 +44,7 @@ jobs:
           port: ${{ secrets.EC2_SSH_PORT || '22' }}
           script: |
             set -e
-            IMAGE_ID=ghcr.io/${{ github.repository }}-backend
+            IMAGE_ID=ghcr.io/${{ github.repository }}
             IMAGE_ID=$(echo $IMAGE_ID | tr '[A-Z]' '[a-z]')
             VERSION=latest
             
