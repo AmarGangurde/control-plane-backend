@@ -1,15 +1,24 @@
-FROM node:18-alpine AS base
-
-WORKDIR /usr/src/app
-
-# Install production dependencies only
+# --- Build Stage ---
+FROM node:20-alpine AS builder
+WORKDIR /app
 COPY package*.json ./
-RUN npm ci --only=production
-
-# Copy source
+RUN npm install
 COPY . .
 
-ENV NODE_ENV=production
-EXPOSE 3000
+# --- Session Stage ---
+FROM node:20-alpine
+WORKDIR /app
 
+# Install dependencies needed for better-sqlite3 (native build)
+RUN apk add --no-cache python3 make g++ 
+
+COPY --from=builder /app/package*.json ./
+COPY --from=builder /app/node_modules ./node_modules
+COPY --from=builder /app/src ./src
+
+# Create data directory for SQLite
+RUN mkdir -p /app/data && chown node:node /app/data
+
+EXPOSE 3000
+USER node
 CMD ["node", "src/server.js"]

@@ -1,0 +1,16 @@
+services:
+  control-plane:
+    build: .
+    image: control-plane-backend:latest
+    container_name: control-plane
+    ports:
+      - "3000:3000"
+    volumes:
+      - ./data:/app/data
+    env_file: .env
+    restart: always
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "10m"
+        max-file: "3"

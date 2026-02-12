@@ -12,6 +12,8 @@ import { getPlanById } from '../models/plan.model.js';
 import { updateUserBalance } from '../models/user.model.js';
 import { killAppCompletely } from '../services/app.service.js';
 import imageService from '../services/image.service.js';
+import { startPodBilling } from '../services/billing.service.js';
+import db from '../db/db.js'; // Added to ensure free plan logic is safe
 
 export const createApp = async (req, res) => {
   try {
@@ -41,10 +43,10 @@ export const createApp = async (req, res) => {
       }
     }
 
-    // Billing check (skip for free plan)
+    // Billing check (delegated to startPodBilling later, but good for early exit)
     if (plan.price_per_hour > 0 && user.balance < plan.price_per_hour) {
       return res.status(402).json({
-        error: `insufficient balance. ${plan.name} plan requires at least ₹${plan.price_per_hour} to start`
+        error: `insufficient balance. ${plan.name} plan requires at least ₹${plan.price_per_hour} (1 hour reserve) to start`
       });
     }
 
@@ -61,12 +63,6 @@ export const createApp = async (req, res) => {
     }
     const servicePort = 80;
 
-    // Deduct initial charge
-    updateUserBalance(user.id, -plan.price_per_hour);
-    // Log transaction (optional but good)
-    // We'll skip explicit transaction log here to keep it simple or user can see balance drop. 
-    // Actually, let's keep it simple.
-
     const appId = uuidv4();
     const planName = plan.id.replace('p-', '');
     // Namespace: name-plan-random
@@ -74,13 +70,7 @@ export const createApp = async (req, res) => {
     const host = `${namespace}.${baseDomain}`;
     const url = `http://${host}`;
 
-    await k8sService.createNamespace(namespace);
-    // Pass plan resources
-    await k8sService.createQuota(namespace, plan);
-    await k8sService.createDeployment({ namespace, image, containerPort, plan, env, command, args });
-    await k8sService.createService({ namespace, servicePort, containerPort });
-    await k8sService.createIngress({ namespace, host, port: servicePort });
-
+    // 1. Insert stopped app record first
     insertApp({
       id: appId,
       name,
@@ -95,6 +85,34 @@ export const createApp = async (req, res) => {
       command,
       args
     });
+
+    // 2. Start billing (reserves 1 hour, sets status to 'running')
+    if (plan.price_per_hour > 0) {
+      try {
+        startPodBilling(appId, user.id, plan.price_per_hour);
+      } catch (err) {
+        // Cleanup if billing fails
+        deleteAppById(appId);
+        return res.status(402).json({ error: err.message });
+      }
+    } else {
+      // For free plan, just mark it as running in DB
+      db.prepare("UPDATE apps SET status = 'running', started_at = ?, last_billed_at = ? WHERE id = ?")
+        .run(Math.floor(Date.now() / 1000), Math.floor(Date.now() / 1000), appId);
+    }
+
+    // 3. Create K8s infrastructure
+    try {
+      await k8sService.createNamespace(namespace);
+      await k8sService.createQuota(namespace, plan);
+      await k8sService.createDeployment({ namespace, image, containerPort, plan, env, command, args });
+      await k8sService.createService({ namespace, servicePort, containerPort });
+      await k8sService.createIngress({ namespace, host, port: servicePort });
+    } catch (k8sErr) {
+      logger.error('K8s creation failed, rolling back billing', k8sErr);
+      await killAppCompletely({ id: appId, namespace });
+      throw new Error(`Cloud deployment failed: ${k8sErr.message}`);
+    }
 
     res.status(201).json({
       id: appId,

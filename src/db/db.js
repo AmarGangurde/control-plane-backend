@@ -30,9 +30,14 @@ db.prepare(`
     google_id TEXT UNIQUE,
     email TEXT UNIQUE,
     balance REAL DEFAULT 0,
+    reserved_balance REAL DEFAULT 0,
     created_at DATETIME DEFAULT CURRENT_TIMESTAMP
   )
 `).run();
+
+try {
+  db.prepare('ALTER TABLE users ADD COLUMN reserved_balance REAL DEFAULT 0').run();
+} catch (e) { }
 
 // plans
 db.prepare(`
@@ -54,10 +59,10 @@ try {
 
 // Insert/Update default plans
 const insertPlan = db.prepare('INSERT OR REPLACE INTO plans (id, name, cpu, memory, price_per_hour) VALUES (?, ?, ?, ?, ?)');
-insertPlan.run('p-tiny', 'Tiny (Free)', '50m', '64Mi', 0);
-insertPlan.run('p-small', 'Small', '100m', '128Mi', 0.25);
-insertPlan.run('p-medium', 'Medium', '500m', '512Mi', 0.5);
-insertPlan.run('p-large', 'Large', '1000m', '1024Mi', 1.0);
+insertPlan.run('p-tiny', 'Tiny (Free)', '25m', '32Mi', 0);
+insertPlan.run('p-small', 'Small', '100m', '128Mi', 0.5);
+insertPlan.run('p-medium', 'Medium', '500m', '512Mi', 2.0);
+insertPlan.run('p-large', 'Large', '1000m', '1024Mi', 4.0);
 
 
 // transactions
@@ -97,12 +102,37 @@ db.prepare(`
     command TEXT, -- JSON string
     args TEXT, -- JSON string
     api_key TEXT,
+    hourly_rate REAL DEFAULT 0,
+    status TEXT DEFAULT 'stopped',
+    started_at INTEGER DEFAULT 0,
+    last_billed_at INTEGER DEFAULT 0,
+    reserved_amount REAL DEFAULT 0,
+    total_charged REAL DEFAULT 0,
     created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
     last_charged_at DATETIME DEFAULT CURRENT_TIMESTAMP,
     FOREIGN KEY (user_id) REFERENCES users(id),
     FOREIGN KEY (plan_id) REFERENCES plans(id)
   )
 `).run();
+
+try {
+  db.prepare('ALTER TABLE apps ADD COLUMN hourly_rate REAL DEFAULT 0').run();
+} catch (e) { }
+try {
+  db.prepare('ALTER TABLE apps ADD COLUMN status TEXT DEFAULT "stopped"').run();
+} catch (e) { }
+try {
+  db.prepare('ALTER TABLE apps ADD COLUMN started_at INTEGER DEFAULT 0').run();
+} catch (e) { }
+try {
+  db.prepare('ALTER TABLE apps ADD COLUMN last_billed_at INTEGER DEFAULT 0').run();
+} catch (e) { }
+try {
+  db.prepare('ALTER TABLE apps ADD COLUMN reserved_amount REAL DEFAULT 0').run();
+} catch (e) { }
+try {
+  db.prepare('ALTER TABLE apps ADD COLUMN total_charged REAL DEFAULT 0').run();
+} catch (e) { }
 
 // Migration: Ensure new columns exist
 try {
