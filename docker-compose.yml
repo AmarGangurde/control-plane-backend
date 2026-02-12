@@ -7,6 +7,7 @@ services:
     volumes:
       - ./data:/app/data
       - /home/ubuntu/.kube/config:/home/node/.kube/config:ro
+      - /home/ubuntu/.kube/config:/app/data/k3s.yaml:ro
       - ./.env:/app/.env:ro
     restart: always
     logging:

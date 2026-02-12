@@ -6,17 +6,33 @@ class K8sService {
   constructor() {
     const kc = new k8s.KubeConfig();
 
-    try {
-      // In Docker, we map the host config to /home/node/.kube/config
-      const isProd = process.env.NODE_ENV === 'production';
-      if (isProd) {
-        kc.loadFromFile('/home/node/.kube/config');
-      } else {
-        kc.loadFromDefault();
+    const possiblePaths = [
+      process.env.KUBECONFIG,
+      '/home/node/.kube/config',
+      '/app/.kube/config',
+      '/app/data/k3s.yaml'
+    ];
+
+    let loaded = false;
+    for (const path of possiblePaths) {
+      if (!path) continue;
+      try {
+        kc.loadFromFile(path);
+        logger.info(`✅ Successfully loaded KubeConfig from: ${path}`);
+        loaded = true;
+        break;
+      } catch (e) {
+        // Just move to the next one
       }
-    } catch (err) {
-      logger.error('Failed to load KubeConfig, falling back to default', err.message);
-      kc.loadFromDefault();
+    }
+
+    if (!loaded) {
+      try {
+        kc.loadFromDefault();
+        logger.info('ℹ️ Loaded KubeConfig from default system path');
+      } catch (err) {
+        logger.error('❌ Critical: Failed to find any KubeConfig. K8s operations will fail.', err.message);
+      }
     }
 
     const cluster = kc.getCurrentCluster();
