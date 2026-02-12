@@ -52,56 +52,15 @@ jobs:
             echo "${{ secrets.GITHUB_TOKEN }}" | docker login ghcr.io -u ${{ github.actor }} --password-stdin
             docker pull $IMAGE_ID:$VERSION
 
-            # Blue-Green Deploy Logic
-            APP_NAME="backend-app"
-            NEW_PORT=3001
-            OLD_PORT=3000
+            # Deploy using Docker Compose
+            cd ~/control-plane-backend
+            git pull origin main || true
             
-            echo "🚀 Starting Blue-Green Swap..."
+            echo "🐳 Pulling latest images from GHCR..."
+            docker compose pull
             
-            # Start "Green" version
-            docker run -d \
-              --name "${APP_NAME}-green" \
-              -p $NEW_PORT:3000 \
-              -v /home/ubuntu/data:/app/data \
-              --env-file /home/ubuntu/.env \
-               $IMAGE_ID:$VERSION
-
-            echo "⏳ Verifying new container..."
-            sleep 5
+            echo "🚀 Starting updated containers..."
+            docker compose up -d
             
-            # Simple check if container is running
-            if [ "$(docker inspect -f '{{.State.Running}}' ${APP_NAME}-green)" = "true" ]; then
-                echo "✅ New container is healthy. Flipping traffic..."
-                
-                # Update Nginx on host (assuming user has set up the sed command or similar)
-                # sudo sed -i "s/127.0.0.1:$OLD_PORT/127.0.0.1:$NEW_PORT/g" /etc/nginx/sites-available/default
-                # sudo nginx -s reload
-                
-                # For this demo, we swap containers
-                docker stop $APP_NAME || true
-                docker rm $APP_NAME || true
-                docker rename "${APP_NAME}-green" $APP_NAME || true
-                
-                # Final production run with correct networking and volumes
-                docker stop $APP_NAME || true
-                docker rm $APP_NAME || true
-                docker run -d \
-                  --restart unless-stopped \
-                  --name $APP_NAME \
-                  --network host \
-                  -e NODE_ENV=production \
-                  -v /home/ubuntu/data:/app/data \
-                  -v /home/ubuntu/.kube/config:/home/node/.kube/config:ro \
-                  -v /home/ubuntu/.kube/config:/app/k3s.yaml:ro \
-                  -v /home/ubuntu/.env:/app/.env:ro \
-                  $IMAGE_ID:$VERSION
-                
-                echo "🏁 Deployment successful!"
-            else
-                echo "❌ New container failed to start. Rolling back..."
-                docker stop "${APP_NAME}-green" || true
-                docker rm "${APP_NAME}-green" || true
-                exit 1
-            fi
+            echo "🏁 Deployment successful!"
 
