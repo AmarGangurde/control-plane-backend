@@ -46,16 +46,25 @@ export const startPodBilling = (podId, userId, hourlyRatePaise) => {
  */
 export const stopPodBilling = (podId) => {
     const tx = db.transaction(() => {
-        const app = db.prepare('SELECT user_id, reserved_amount FROM apps WHERE id = ?').get(podId);
-        if (!app || app.reserved_amount <= 0) return;
+        const app = db.prepare('SELECT user_id, reserved_amount, total_charged, name FROM apps WHERE id = ?').get(podId);
+        if (!app) return;
 
-        // Refund reserved amount to balance
-        db.prepare('UPDATE users SET balance = balance + ?, reserved_balance = reserved_balance - ? WHERE id = ?')
-            .run(app.reserved_amount, app.reserved_amount, app.user_id);
+        // Refund reserved amount to balance (if any)
+        if (app.reserved_amount > 0) {
+            db.prepare('UPDATE users SET balance = balance + ?, reserved_balance = reserved_balance - ? WHERE id = ?')
+                .run(app.reserved_amount, app.reserved_amount, app.user_id);
 
-        // Log refund in history
-        db.prepare('INSERT INTO transactions (id, user_id, amount, type, status) VALUES (?, ?, ?, ?, ?)')
-            .run(uuidv4(), app.user_id, app.reserved_amount, 'refund', 'success');
+            // Log refund in history
+            db.prepare('INSERT INTO transactions (id, user_id, amount, type, status, external_id) VALUES (?, ?, ?, ?, ?, ?)')
+                .run(uuidv4(), app.user_id, app.reserved_amount, 'refund', 'success', `Refund: ${app.name}`);
+        }
+
+        // Log the FINAL USAGE SUMMARY (The total cost of the pod's life)
+        // We use a negative amount to show it as an "Expense" in the list, but it DOES NOT affect balance (balance was already deducted incrementally)
+        if (app.total_charged > 0) {
+            db.prepare('INSERT INTO transactions (id, user_id, amount, type, status, external_id) VALUES (?, ?, ?, ?, ?, ?)')
+                .run(uuidv4(), app.user_id, -app.total_charged, 'usage_report', 'success', `Total Cost: ${app.name}`);
+        }
 
         // Reset app billing fields
         db.prepare("UPDATE apps SET status = 'stopped', reserved_amount = 0 WHERE id = ?")
