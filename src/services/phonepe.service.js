@@ -43,8 +43,9 @@ class PhonePeService {
         const base64Payload = Buffer.from(JSON.stringify(payload)).toString('base64');
         const checksum = this.generateChecksum(base64Payload, '/pg/v1/pay');
 
+        const checkoutBase = apiBase.endsWith('/api') ? apiBase : `${apiBase}/api`;
         return {
-            redirectUrl: `${apiBase}/api/billing/mock-checkout?tid=${request.merchantOrderId}`,
+            redirectUrl: `${checkoutBase}/billing/mock-checkout?tid=${request.merchantOrderId}`,
             base64Payload,
             checksum
         };
