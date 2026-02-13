@@ -49,16 +49,14 @@ jobs:
             VERSION=latest
             
             echo "Logging into GHCR and pulling $IMAGE_ID:$VERSION"
-            echo "${{ secrets.GITHUB_TOKEN }}" | docker login ghcr.io -u ${{ github.actor }} --password-stdin
+            ACTOR=$(echo "${{ github.actor }}" | tr '[A-Z]' '[a-z]')
+            echo "${{ secrets.GITHUB_TOKEN }}" | docker login ghcr.io -u $ACTOR --password-stdin
             docker pull $IMAGE_ID:$VERSION
 
             # Deploy using Docker Compose
             cd ~/control-plane-backend
             git fetch origin main
             git reset --hard origin/main
-            
-            echo "🐳 Pulling latest images from GHCR..."
-            docker compose pull
             
             echo "🚀 Starting updated containers..."
             docker compose up -d
