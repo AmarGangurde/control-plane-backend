@@ -5,24 +5,24 @@ import { v4 as uuidv4 } from 'uuid';
 
 /**
  * Starts billing for a pod.
- * Deducts 1 hour cost as reserve.
+ * Deducts 1 hour cost as reserve (in Paise).
  */
-export const startPodBilling = (podId, userId, hourlyRate) => {
+export const startPodBilling = (podId, userId, hourlyRatePaise) => {
     const now = Math.floor(Date.now() / 1000);
 
     const tx = db.transaction(() => {
         const user = db.prepare('SELECT balance FROM users WHERE id = ?').get(userId);
-        if (!user || user.balance < hourlyRate) {
-            throw new Error('Insufficient balance to start pod');
+        if (!user || user.balance < hourlyRatePaise) {
+            throw new Error('Insufficient balance to start pod. Minimum 1 hour credit required.');
         }
 
         // Deduct from balance, add to reserved
         db.prepare('UPDATE users SET balance = balance - ?, reserved_balance = reserved_balance + ? WHERE id = ?')
-            .run(hourlyRate, hourlyRate, userId);
+            .run(hourlyRatePaise, hourlyRatePaise, userId);
 
-        // Log transaction
+        // Log initial reservation in history
         db.prepare('INSERT INTO transactions (id, user_id, amount, type, status) VALUES (?, ?, ?, ?, ?)')
-            .run(uuidv4(), userId, -hourlyRate, 'reservation', 'success');
+            .run(uuidv4(), userId, -hourlyRatePaise, 'reservation', 'success');
 
         // Update app record
         db.prepare(`
@@ -34,7 +34,7 @@ export const startPodBilling = (podId, userId, hourlyRate) => {
                 reserved_amount = ?,
                 total_charged = 0
             WHERE id = ?
-        `).run(hourlyRate, now, now, hourlyRate, podId);
+        `).run(hourlyRatePaise, now, now, hourlyRatePaise, podId);
     });
 
     tx();
@@ -42,7 +42,7 @@ export const startPodBilling = (podId, userId, hourlyRate) => {
 
 /**
  * Stops billing for a pod.
- * Refunds remaining reserved amount.
+ * Refunds remaining reserved amount (in Paise).
  */
 export const stopPodBilling = (podId) => {
     const tx = db.transaction(() => {
@@ -53,7 +53,7 @@ export const stopPodBilling = (podId) => {
         db.prepare('UPDATE users SET balance = balance + ?, reserved_balance = reserved_balance - ? WHERE id = ?')
             .run(app.reserved_amount, app.reserved_amount, app.user_id);
 
-        // Log transaction
+        // Log refund in history
         db.prepare('INSERT INTO transactions (id, user_id, amount, type, status) VALUES (?, ?, ?, ?, ?)')
             .run(uuidv4(), app.user_id, app.reserved_amount, 'refund', 'success');
 
@@ -67,7 +67,7 @@ export const stopPodBilling = (podId) => {
 
 /**
  * Global billing loop.
- * Runs every 60 seconds, but charges per-second precision.
+ * Runs every 60 seconds.
  */
 export const runBillingLoop = async () => {
     const now = Math.floor(Date.now() / 1000);
@@ -76,46 +76,53 @@ export const runBillingLoop = async () => {
     for (const app of apps) {
         try {
             const elapsedSeconds = now - app.last_billed_at;
-
             if (elapsedSeconds <= 0) continue;
 
-            const costPerSecond = app.hourly_rate / 3600;
-            const cost = elapsedSeconds * costPerSecond;
+            // Hourly rate is in Paise. 
+            // Cost = (elapsed / 3600) * hourlyRate
+            // To keep integer: (hourlyRate * elapsed) / 3600
+            const cost = Math.floor((app.hourly_rate * elapsedSeconds) / 3600);
 
             const tx = db.transaction(() => {
                 let currentReserved = app.reserved_amount;
 
-                if (cost > currentReserved) {
-                    const additionalNeeded = cost - currentReserved;
+                // 1. Charge the cost from the reserve
+                if (cost > 0) {
+                    currentReserved -= cost;
+                    // Deduct from user's global reserved pool
+                    db.prepare('UPDATE users SET reserved_balance = reserved_balance - ? WHERE id = ?')
+                        .run(cost, app.user_id);
+                }
+
+                // 2. Proactive Re-reservation (Top up reserve if below 10 mins threshold)
+                const tenMinsCost = Math.floor(app.hourly_rate / 6);
+                if (currentReserved < tenMinsCost) {
+                    const topupAmount = app.hourly_rate; // Top up another hour
                     const user = db.prepare('SELECT balance FROM users WHERE id = ?').get(app.user_id);
 
-                    if (user && user.balance >= additionalNeeded) {
-                        // Deduct more from wallet to cover the cost
+                    if (user && user.balance >= topupAmount) {
                         db.prepare('UPDATE users SET balance = balance - ?, reserved_balance = reserved_balance + ? WHERE id = ?')
-                            .run(additionalNeeded, additionalNeeded, app.user_id);
-                        currentReserved += additionalNeeded;
+                            .run(topupAmount, topupAmount, app.user_id);
+                        currentReserved += topupAmount;
 
-                        // Log additional reservation
-                        db.prepare('INSERT INTO transactions (id, user_id, amount, type, status) VALUES (?, ?, ?, ?, ?)')
-                            .run(uuidv4(), app.user_id, -additionalNeeded, 'reservation_topup', 'success');
+                        // We DON'T log 'reservation_topup' in transactions to avoid clutter.
+                        // The user sees their balance decrease and reserved pool increase in UI.
                     } else {
-                        // Kill the app if out of money
-                        throw new Error('OUT_OF_BALANCE');
+                        // If reserve is literally empty and no wallet balance, kill pod
+                        if (currentReserved <= 0) {
+                            throw new Error('OUT_OF_BALANCE');
+                        }
                     }
                 }
 
-                // Apply per-second cost
-                const newReserved = currentReserved - cost;
-                db.prepare('UPDATE users SET reserved_balance = reserved_balance - ? WHERE id = ?')
-                    .run(cost, app.user_id);
-
+                // 3. Update app status
                 db.prepare(`
                     UPDATE apps SET 
                         reserved_amount = ?,
                         total_charged = total_charged + ?,
                         last_billed_at = ?
                     WHERE id = ?
-                `).run(newReserved, cost, now, app.id);
+                `).run(currentReserved, cost, now, app.id);
             });
 
             try {
@@ -133,8 +140,9 @@ export const runBillingLoop = async () => {
         }
     }
 };
+
 export const startBillingCron = () => {
-    logger.info('Starting per-second billing observer (60s cycle)...');
+    logger.info('Starting per-minute integer billing cycle...');
     setInterval(() => {
         runBillingLoop().catch(err => logger.error('Billing loop error:', err));
     }, 60000);

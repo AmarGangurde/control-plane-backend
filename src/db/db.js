@@ -29,14 +29,14 @@ db.prepare(`
     id TEXT PRIMARY KEY,
     google_id TEXT UNIQUE,
     email TEXT UNIQUE,
-    balance REAL DEFAULT 0,
-    reserved_balance REAL DEFAULT 0,
+    balance INTEGER DEFAULT 0,
+    reserved_balance INTEGER DEFAULT 0,
     created_at DATETIME DEFAULT CURRENT_TIMESTAMP
   )
 `).run();
 
 try {
-  db.prepare('ALTER TABLE users ADD COLUMN reserved_balance REAL DEFAULT 0').run();
+  db.prepare('ALTER TABLE users ADD COLUMN reserved_balance INTEGER DEFAULT 0').run();
 } catch (e) { }
 
 // plans
@@ -46,7 +46,7 @@ db.prepare(`
     name TEXT,
     cpu TEXT,
     memory TEXT,
-    price_per_hour REAL
+    price_per_hour INTEGER
   )
 `).run();
 
@@ -57,12 +57,12 @@ try {
   // We'll just ensure our new inserts use the REAL values.
 } catch (e) { }
 
-// Insert/Update default plans
+// Insert/Update default plans (Prices in Paise: 1 INR = 100 Paise)
 const insertPlan = db.prepare('INSERT OR REPLACE INTO plans (id, name, cpu, memory, price_per_hour) VALUES (?, ?, ?, ?, ?)');
 insertPlan.run('p-tiny', 'Tiny (Free)', '25m', '32Mi', 0);
-insertPlan.run('p-small', 'Small', '100m', '128Mi', 0.5);
-insertPlan.run('p-medium', 'Medium', '500m', '512Mi', 2.0);
-insertPlan.run('p-large', 'Large', '1000m', '1024Mi', 4.0);
+insertPlan.run('p-small', 'Small', '100m', '128Mi', 50); // 0.50 INR
+insertPlan.run('p-medium', 'Medium', '500m', '512Mi', 200); // 2.00 INR
+insertPlan.run('p-large', 'Large', '1000m', '1024Mi', 400); // 4.00 INR
 
 
 // transactions
@@ -102,12 +102,12 @@ db.prepare(`
     command TEXT, -- JSON string
     args TEXT, -- JSON string
     api_key TEXT,
-    hourly_rate REAL DEFAULT 0,
+    hourly_rate INTEGER DEFAULT 0,
     status TEXT DEFAULT 'stopped',
     started_at INTEGER DEFAULT 0,
     last_billed_at INTEGER DEFAULT 0,
-    reserved_amount REAL DEFAULT 0,
-    total_charged REAL DEFAULT 0,
+    reserved_amount INTEGER DEFAULT 0,
+    total_charged INTEGER DEFAULT 0,
     created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
     last_charged_at DATETIME DEFAULT CURRENT_TIMESTAMP,
     FOREIGN KEY (user_id) REFERENCES users(id),

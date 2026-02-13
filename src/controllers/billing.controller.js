@@ -27,19 +27,20 @@ export const initiatePayment = async (req, res) => {
     }
 
     const transactionId = `TXN_${uuidv4().split('-')[0].toUpperCase()}`;
+    const amountPaise = amount * 100;
 
-    // Create pending transaction in our DB
+    // Create pending transaction in our DB (Stored as Paise)
     db.prepare(`
         INSERT INTO transactions (id, user_id, amount, type, status, external_id)
         VALUES (?, ?, ?, 'topup', 'pending', ?)
-    `).run(uuidv4(), userId, amount, transactionId);
+    `).run(uuidv4(), userId, amountPaise, transactionId);
 
     // Using the SDK-style request builder
     const request = StandardCheckoutPayRequest.builder()
         .merchantOrderId(transactionId)
-        .amount(amount * 100) // Convert to paise
+        .amount(amountPaise)
         .redirectUrl(`${frontendUrl}/billing?status=processing`)
-        .callbackUrl(`${apiBase}/api/billing/callback`)
+        .callbackUrl(`${apiBase}/billing/callback`)
         .build();
 
     const response = await phonepeService.pay(request);
@@ -86,7 +87,7 @@ export const processMockSuccess = (req, res) => {
             merchantId: 'MOCK_MERCHANT_ID',
             merchantTransactionId: tid,
             transactionId: `T${Date.now()}`,
-            amount: transaction.amount * 100,
+            amount: transaction.amount, // Already in Paise
             state: 'COMPLETED',
             responseCode: 'SUCCESS'
         }
