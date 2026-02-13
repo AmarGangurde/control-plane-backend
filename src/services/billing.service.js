@@ -95,9 +95,9 @@ export const runBillingLoop = async () => {
                 }
 
                 // 2. Proactive Re-reservation (Top up reserve if below 10 mins threshold)
-                const tenMinsCost = Math.floor(app.hourly_rate / 6);
+                const tenMinsCost = Math.ceil(app.hourly_rate / 6);
                 if (currentReserved < tenMinsCost) {
-                    const topupAmount = app.hourly_rate; // Top up another hour
+                    const topupAmount = tenMinsCost; // Top up another 10 mins
                     const user = db.prepare('SELECT balance FROM users WHERE id = ?').get(app.user_id);
 
                     if (user && user.balance >= topupAmount) {
@@ -105,6 +105,7 @@ export const runBillingLoop = async () => {
                             .run(topupAmount, topupAmount, app.user_id);
                         currentReserved += topupAmount;
 
+                        logger.info(`Auto-reserved 10m for app ${app.id} (+${topupAmount} paise)`);
                         // We DON'T log 'reservation_topup' in transactions to avoid clutter.
                         // The user sees their balance decrease and reserved pool increase in UI.
                     } else {

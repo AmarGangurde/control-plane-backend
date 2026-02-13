@@ -135,7 +135,7 @@ export const mockCheckout = (req, res) => {
                         <div class="absolute top-0 right-0 w-32 h-32 bg-white/10 rounded-full -mr-16 -mt-16 blur-2xl"></div>
                         <img src="https://www.phonepe.com/en/assets/images/logo.png" class="h-8 mx-auto mb-8 brightness-0 invert" alt="PhonePe">
                         <div class="text-white/60 text-xs font-bold uppercase tracking-[0.2em] mb-2">Amount to Pay</div>
-                        <div class="text-5xl font-black text-white leading-none">₹${transaction.amount}</div>
+                        <div class="text-5xl font-black text-white leading-none">₹${(transaction.amount / 100).toFixed(2)}</div>
                     </div>
                     
                     <div class="p-10">
