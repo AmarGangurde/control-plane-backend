@@ -42,53 +42,24 @@ export const startPodBilling = (podId, userId, hourlyRatePaise) => {
 
 /**
  * Stops billing for a pod.
- * Calculates final cost for partial time, deducts from reserve, and refunds remainder.
+ * Refunds remaining reserved amount (in Paise).
  */
 export const stopPodBilling = (podId) => {
-    const now = Math.floor(Date.now() / 1000);
-
     const tx = db.transaction(() => {
-        // Fetch necessary fields including billing info
-        const app = db.prepare('SELECT user_id, reserved_amount, last_billed_at, hourly_rate FROM apps WHERE id = ?').get(podId);
+        const app = db.prepare('SELECT user_id, reserved_amount FROM apps WHERE id = ?').get(podId);
+        if (!app || app.reserved_amount <= 0) return;
 
-        // If app not found or nothing reserved, just ensure status is stopped
-        if (!app || app.reserved_amount <= 0) {
-            db.prepare("UPDATE apps SET status = 'stopped', reserved_amount = 0 WHERE id = ?").run(podId);
-            return;
-        }
-
-        // Calculate final partial cost (from last_billed_at to now)
-        let finalCost = 0;
-        if (app.last_billed_at && app.hourly_rate) {
-            const elapsedSeconds = now - app.last_billed_at;
-            if (elapsedSeconds > 0) {
-                // (hourly_rate * elapsed) / 3600
-                // Use ceil to ensure we capture fractional usage on exit. 
-                // This prevents "free" 15-second runs.
-                finalCost = Math.ceil((app.hourly_rate * elapsedSeconds) / 3600);
-            }
-        }
-
-        // Ensure we don't charge more than what's reserved (though in theory, users owe it, 
-        // with prepaid model we usually cap at reserve. But here we have balance.
-        // Let's assume strict deduction from reserve + refund remainder.)
-        // If finalCost > reserved_amount (rare), refund is negative => user pays diff from balance.
-        const refundAmount = app.reserved_amount - finalCost;
-
-        // Update user balance:
-        // reserved_balance -= app.reserved_amount (clear the hold)
-        // balance += refundAmount (add back unused)
+        // Refund reserved amount to balance
         db.prepare('UPDATE users SET balance = balance + ?, reserved_balance = reserved_balance - ? WHERE id = ?')
-            .run(refundAmount, app.reserved_amount, app.user_id);
+            .run(app.reserved_amount, app.reserved_amount, app.user_id);
 
-        // Log transaction (refund)
-        // If refundAmount is negative, it logs as negative (charge).
+        // Log refund in history
         db.prepare('INSERT INTO transactions (id, user_id, amount, type, status) VALUES (?, ?, ?, ?, ?)')
-            .run(uuidv4(), app.user_id, refundAmount, 'refund', 'success');
+            .run(uuidv4(), app.user_id, app.reserved_amount, 'refund', 'success');
 
-        // Reset app billing fields and add final charge to total
-        db.prepare("UPDATE apps SET status = 'stopped', reserved_amount = 0, total_charged = total_charged + ? WHERE id = ?")
-            .run(finalCost, podId);
+        // Reset app billing fields
+        db.prepare("UPDATE apps SET status = 'stopped', reserved_amount = 0 WHERE id = ?")
+            .run(podId);
     });
 
     tx();
@@ -107,15 +78,21 @@ export const runBillingLoop = async () => {
             const elapsedSeconds = now - app.last_billed_at;
             if (elapsedSeconds <= 0) continue;
 
-            // Hourly rate is in Paise. 
             // Cost = (elapsed / 3600) * hourlyRate
-            // To keep integer: (hourlyRate * elapsed) / 3600
-            const cost = Math.floor((app.hourly_rate * elapsedSeconds) / 3600);
+            // To prevent "0 cost" loops for cheap plans (e.g. 50 paise/hr):
+            // We use a high-precision accumulator or simply allow float substraction in memory but store int in DB?
+            // BETTER: We track 'last_billed_at' precisely. 
+            // If the calculated cost is < 1 paise, WE DO NOTHING THIS TICK. We wait for more time to elapse.
+
+            const costFloat = (app.hourly_rate * elapsedSeconds) / 3600;
+
+            // Only charge if we have accumulated at least 1 Paise of cost
+            if (costFloat < 1) continue;
+
+            const cost = Math.floor(costFloat);
 
             const tx = db.transaction(() => {
                 let currentReserved = app.reserved_amount;
-                let dataChanged = false;
-                let newLastBilledAt = app.last_billed_at;
 
                 // 1. Charge the cost from the reserve
                 if (cost > 0) {
@@ -123,14 +100,9 @@ export const runBillingLoop = async () => {
                     // Deduct from user's global reserved pool
                     db.prepare('UPDATE users SET reserved_balance = reserved_balance - ? WHERE id = ?')
                         .run(cost, app.user_id);
-
-                    // Since we successfully charged, we advance the billing clock
-                    newLastBilledAt = now;
-                    dataChanged = true;
                 }
 
                 // 2. Proactive Re-reservation (Top up reserve if below 10 mins threshold)
-                // hourly_rate / 6 => cost for 10 mins
                 const tenMinsCost = Math.ceil(app.hourly_rate / 6);
                 if (currentReserved < tenMinsCost) {
                     const topupAmount = tenMinsCost; // Top up another 10 mins
@@ -142,7 +114,8 @@ export const runBillingLoop = async () => {
                         currentReserved += topupAmount;
 
                         logger.info(`Auto-reserved 10m for app ${app.id} (+${topupAmount} paise)`);
-                        dataChanged = true;
+                        // We DON'T log 'reservation_topup' in transactions to avoid clutter.
+                        // The user sees their balance decrease and reserved pool increase in UI.
                     } else {
                         // If reserve is literally empty and no wallet balance, kill pod
                         if (currentReserved <= 0) {
@@ -151,18 +124,14 @@ export const runBillingLoop = async () => {
                     }
                 }
 
-                // 3. Update app status IF anything changed
-                // Note: We only update last_billed_at if we actually charged 'cost' > 0.
-                // If cost was 0, we keep the old last_billed_at so usage accumulates for the next loop.
-                if (dataChanged) {
-                    db.prepare(`
-                        UPDATE apps SET 
-                            reserved_amount = ?,
-                            total_charged = total_charged + ?,
-                            last_billed_at = ?
-                        WHERE id = ?
-                    `).run(currentReserved, cost, newLastBilledAt, app.id);
-                }
+                // 3. Update app status
+                db.prepare(`
+                    UPDATE apps SET 
+                        reserved_amount = ?,
+                        total_charged = total_charged + ?,
+                        last_billed_at = ?
+                    WHERE id = ?
+                `).run(currentReserved, cost, now, app.id);
             });
 
             try {
@@ -182,8 +151,8 @@ export const runBillingLoop = async () => {
 };
 
 export const startBillingCron = () => {
-    logger.info('Starting per-minute integer billing cycle...');
+    logger.info('Starting per-10-seconds integer billing cycle...');
     setInterval(() => {
         runBillingLoop().catch(err => logger.error('Billing loop error:', err));
-    }, 60000);
+    }, 10000);
 };
