@@ -39,33 +39,6 @@ try {
   db.prepare('ALTER TABLE users ADD COLUMN reserved_balance INTEGER DEFAULT 0').run();
 } catch (e) { }
 
-// 1. Ensure Meta table exists to track migrations
-db.prepare(`
-  CREATE TABLE IF NOT EXISTS _meta (
-    key TEXT PRIMARY KEY,
-    value TEXT
-  )
-`).run();
-
-// 2. Migration: REAL (INR) -> INTEGER (Paise)
-const hasMigrated = db.prepare('SELECT value FROM _meta WHERE key = "currency_migrated"').get();
-
-if (!hasMigrated) {
-  const userCount = db.prepare('SELECT COUNT(*) as count FROM users').get().count;
-
-  // Only migrate if there is actually data to migrate
-  if (userCount > 0) {
-    console.log('🏗️ Migrating existing currency data REAL -> INTEGER (Paise)...');
-    db.prepare('UPDATE users SET balance = ROUND(balance * 100), reserved_balance = ROUND(reserved_balance * 100)').run();
-    db.prepare('UPDATE apps SET hourly_rate = ROUND(hourly_rate * 100), reserved_amount = ROUND(reserved_amount * 100), total_charged = ROUND(total_charged * 100)').run();
-    db.prepare('UPDATE plans SET price_per_hour = ROUND(price_per_hour * 100)').run();
-    db.prepare('UPDATE transactions SET amount = ROUND(amount * 100) WHERE type != "topup"').run();
-  }
-
-  db.prepare('INSERT OR REPLACE INTO _meta (key, value) VALUES ("currency_migrated", "true")').run();
-  console.log('✅ Currency migration complete or marked as done.');
-}
-
 // plans
 db.prepare(`
   CREATE TABLE IF NOT EXISTS plans (
