@@ -114,6 +114,15 @@ export const processMockSuccess = (req, res) => {
 };
 
 export const getTransactions = (req, res) => {
+    // Auto-expire stale pending topups older than 30 minutes
+    db.prepare(`
+        UPDATE transactions 
+        SET status = 'expired' 
+        WHERE status = 'pending' 
+        AND type = 'topup'
+        AND created_at < datetime('now', '-30 minutes')
+    `).run();
+
     const transactions = db.prepare(`
         SELECT * FROM transactions 
         WHERE user_id = ? 
@@ -178,7 +187,7 @@ export const mockCheckout = (req, res) => {
                                     <svg class="w-5 h-5 group-hover:translate-x-1 transition-transform" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="3" d="M14 5l7 7m0 0l-7 7m7-7H3"></path></svg>
                                 </span>
                             </a>
-                            <a href="${frontendUrl}/billing?status=cancelled" class="block text-center text-gray-400 text-sm font-bold hover:text-red-500 transition-colors py-2">
+                            <a href="/api/billing/mock-cancel?tid=${tid}" class="block text-center text-gray-400 text-sm font-bold hover:text-red-500 transition-colors py-2">
                                 Cancel & Return to Dashboard
                             </a>
                         </div>
@@ -197,4 +206,19 @@ export const mockCheckout = (req, res) => {
             </body>
         </html>
     `);
+};
+
+export const cancelPayment = (req, res) => {
+    const { tid } = req.query;
+
+    if (!tid) return res.status(400).send('Missing transaction ID');
+
+    // Atomically mark as cancelled only if still pending
+    const result = db.prepare('UPDATE transactions SET status = \'cancelled\' WHERE external_id = ? AND status = \'pending\'').run(tid);
+
+    if (result.changes > 0) {
+        logger.info(`Transaction ${tid} cancelled by user`);
+    }
+
+    res.redirect(`${frontendUrl}/billing?topup=cancelled`);
 };

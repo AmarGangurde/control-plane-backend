@@ -6,7 +6,8 @@ import {
     handleCallback,
     getTransactions,
     mockCheckout,
-    processMockSuccess
+    processMockSuccess,
+    cancelPayment
 } from '../controllers/billing.controller.js';
 import { requireApiKey } from '../middleware/auth.js';
 import { rateLimit } from '../middleware/rateLimit.js';
@@ -18,6 +19,7 @@ router.get('/plans', listPlans);
 router.post('/callback', handleCallback);
 router.get('/mock-checkout', mockCheckout);
 router.get('/mock-success', processMockSuccess);
+router.get('/mock-cancel', cancelPayment);
 
 // Protected routes (Auth + Rate Limit)
 router.get('/balance', requireApiKey, rateLimit('user'), getBalance);
