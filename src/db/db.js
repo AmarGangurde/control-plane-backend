@@ -74,6 +74,7 @@ db.prepare(`
     type TEXT,
     status TEXT DEFAULT 'success',
     external_id TEXT,
+    metadata TEXT,
     created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
     FOREIGN KEY (user_id) REFERENCES users(id)
   )
@@ -85,6 +86,9 @@ try {
 } catch (e) { }
 try {
   db.prepare('ALTER TABLE transactions ADD COLUMN external_id TEXT').run();
+} catch (e) { }
+try {
+  db.prepare('ALTER TABLE transactions ADD COLUMN metadata TEXT').run();
 } catch (e) { }
 
 // apps

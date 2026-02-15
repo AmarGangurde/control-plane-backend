@@ -46,7 +46,7 @@ export const startPodBilling = (podId, userId, hourlyRatePaise) => {
  */
 export const stopPodBilling = (podId) => {
     const tx = db.transaction(() => {
-        const app = db.prepare('SELECT user_id, reserved_amount, total_charged, name FROM apps WHERE id = ?').get(podId);
+        const app = db.prepare('SELECT user_id, reserved_amount, total_charged, name, started_at FROM apps WHERE id = ?').get(podId);
         if (!app) return;
 
         // Refund reserved amount to balance (if any)
@@ -62,8 +62,12 @@ export const stopPodBilling = (podId) => {
         // Log the FINAL USAGE SUMMARY (The total cost of the pod's life)
         // This is a receipt for transparency; the frontend will display it as a non-deductible report.
         if (app.total_charged > 0) {
-            db.prepare('INSERT INTO transactions (id, user_id, amount, type, status, external_id) VALUES (?, ?, ?, ?, ?, ?)')
-                .run(uuidv4(), app.user_id, -app.total_charged, 'pod_burn_receipt', 'success', app.name);
+            const now = Math.floor(Date.now() / 1000);
+            const durationSeconds = now - app.started_at;
+            const metadata = JSON.stringify({ duration: durationSeconds });
+
+            db.prepare('INSERT INTO transactions (id, user_id, amount, type, status, external_id, metadata) VALUES (?, ?, ?, ?, ?, ?, ?)')
+                .run(uuidv4(), app.user_id, -app.total_charged, 'pod_burn_receipt', 'success', app.name, metadata);
         }
 
         // Reset app billing fields
