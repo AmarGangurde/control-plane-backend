@@ -6,7 +6,8 @@ import {
   insertApp,
   getAppById,
   listAppsByUserId,
-  deleteAppById
+  deleteAppById,
+  updateAppDetails
 } from '../models/app.model.js';
 import { getPlanById } from '../models/plan.model.js';
 import { updateUserBalance } from '../models/user.model.js';
@@ -104,7 +105,7 @@ export const createApp = async (req, res) => {
     // 3. Create K8s infrastructure
     try {
       await k8sService.createNamespace(namespace);
-      await k8sService.createQuota(namespace, plan);
+      await k8sService.createQuota(namespace);
       await k8sService.createDeployment({ namespace, image, containerPort, plan, env, command, args });
       await k8sService.createService({ namespace, servicePort, containerPort });
       await k8sService.createIngress({ namespace, host, port: servicePort });
@@ -134,28 +135,102 @@ export const listApps = async (req, res) => {
 };
 
 export const getApp = async (req, res) => {
-  const app = getAppById(req.params.id);
+  try {
+    const app = getAppById(req.params.id);
 
-  if (!app || app.api_key !== req.apiKey) {
-    return res.status(404).json({ error: 'app not found' });
+    if (!app || app.api_key !== req.apiKey) {
+      return res.status(404).json({ error: 'app not found' });
+    }
+
+    const status = await k8sService.getAppStatus(app.namespace);
+    const metrics = await k8sService.getPodMetrics(app.namespace);
+    res.json({ ...app, status, metrics });
+  } catch (err) {
+    logger.error('Error fetching app details', err?.message || err);
+    res.status(500).json({ error: 'Failed to fetch app details' });
   }
-
-  const status = await k8sService.getAppStatus(app.namespace);
-  const metrics = await k8sService.getPodMetrics(app.namespace);
-  res.json({ ...app, status, metrics });
 };
 
 export const getAppLogs = async (req, res) => {
-  const app = getAppById(req.params.id);
+  try {
+    const app = getAppById(req.params.id);
 
-  if (!app || app.api_key !== req.apiKey) {
-    return res.status(404).json({ error: 'app not found' });
+    if (!app || app.api_key !== req.apiKey) {
+      return res.status(404).json({ error: 'app not found' });
+    }
+
+    const logs = await k8sService.getLogs(app.namespace);
+    res.json({ logs });
+  } catch (err) {
+    logger.error('Error fetching app logs', err?.message || err);
+    res.status(500).json({ error: 'Failed to fetch logs' });
   }
-
-  const logs = await k8sService.getLogs(app.namespace);
-  res.json({ logs });
 };
 
+export const updateApp = async (req, res) => {
+  try {
+    const app = getAppById(req.params.id);
+
+    if (!app || app.api_key !== req.apiKey) {
+      return res.status(404).json({ error: 'app not found' });
+    }
+
+    if (app.status !== 'running') {
+      return res.status(400).json({ error: 'App must be running to update. Start the app first.' });
+    }
+
+    const { image, port, env, command, args } = req.body;
+
+    // At least one field must be provided
+    if (!image && !port && (env === undefined) && (command === undefined) && (args === undefined)) {
+      return res.status(400).json({ error: 'At least one field (image, port, env, command, args) must be provided' });
+    }
+
+    const plan = getPlanById(app.plan_id);
+
+    const newImage = image || app.image;
+    let newPort = port || app.container_port;
+    const newEnv = env !== undefined ? env : (app.env || null);
+    const newCommand = command !== undefined ? command : (app.command || null);
+    const newArgs = args !== undefined ? args : (app.args || null);
+
+    // If image changed and no port specified, auto-detect new port
+    if (image && image !== app.image && !port) {
+      newPort = await imageService.getExposedPort(image);
+    }
+
+    // Rolling update in K8s (zero-downtime: maxSurge=1, maxUnavailable=0)
+    await k8sService.updateDeployment({
+      namespace: app.namespace,
+      image: newImage,
+      containerPort: newPort,
+      plan,
+      env: newEnv,
+      command: newCommand,
+      args: newArgs
+    });
+
+    // Persist changes to DB
+    updateAppDetails(app.id, {
+      image: newImage,
+      containerPort: newPort,
+      env: newEnv,
+      command: newCommand,
+      args: newArgs
+    });
+
+    res.json({
+      id: app.id,
+      name: app.name,
+      url: app.url,
+      status: 'updating',
+      message: 'Rolling update initiated. Zero-downtime deployment in progress.'
+    });
+  } catch (err) {
+    logger.error('Error updating app', err?.message || err);
+    res.status(500).json({ error: err.message });
+  }
+};
 
 export const deleteApp = async (req, res) => {
   const app = getAppById(req.params.id);
@@ -168,3 +243,4 @@ export const deleteApp = async (req, res) => {
 
   res.json({ deleted: true });
 };
+

@@ -55,3 +55,19 @@ export const deleteAppById = (id) => {
     DELETE FROM apps WHERE id = ?
   `).run(id);
 };
+
+export const updateAppDetails = (id, { image, containerPort, env, command, args }) => {
+  const envStr = env ? JSON.stringify(env) : null;
+  const cmdStr = command ? JSON.stringify(command) : null;
+  const argStr = args ? JSON.stringify(args) : null;
+
+  db.prepare(`
+    UPDATE apps SET 
+      image = ?,
+      container_port = ?,
+      env = ?,
+      command = ?,
+      args = ?
+    WHERE id = ?
+  `).run(image, containerPort, envStr, cmdStr, argStr, id);
+};

@@ -45,24 +45,32 @@ db.prepare(`
     id TEXT PRIMARY KEY,
     name TEXT,
     cpu TEXT,
+    cpu_request TEXT,
     memory TEXT,
+    memory_request TEXT,
     price_per_hour INTEGER
   )
 `).run();
 
-// Migration: Change price_per_hour to REAL if it's currently INTEGER
+// Migration: Ensure new columns exist
 try {
-  // SQLite doesn't support changing column type directly easily with ALTER, 
-  // but better-sqlite3 treats REAL/INTEGER reasonably. 
-  // We'll just ensure our new inserts use the REAL values.
+  db.prepare('ALTER TABLE plans ADD COLUMN cpu_request TEXT').run();
+} catch (e) { }
+try {
+  db.prepare('ALTER TABLE plans ADD COLUMN memory_request TEXT').run();
+} catch (e) { }
+// Migration: rename cpu_limit to cpu if needed (fresh installs use 'cpu' now)
+try {
+  db.prepare('ALTER TABLE plans ADD COLUMN cpu TEXT').run();
 } catch (e) { }
 
-// Insert/Update default plans (Prices in Paise: 1 INR = 100 Paise)
-const insertPlan = db.prepare('INSERT OR REPLACE INTO plans (id, name, cpu, memory, price_per_hour) VALUES (?, ?, ?, ?, ?)');
-insertPlan.run('p-tiny', 'Tiny (Free)', '25m', '32Mi', 0);
-insertPlan.run('p-small', 'Small', '100m', '128Mi', 50); // 0.50 INR
-insertPlan.run('p-medium', 'Medium', '500m', '512Mi', 200); // 2.00 INR
-insertPlan.run('p-large', 'Large', '1000m', '1024Mi', 400); // 4.00 INR
+// Insert/Update default plans
+// Limit: What the user is "sold". Request: What the k8s scheduler sees (oversubscription).
+const insertPlan = db.prepare('INSERT OR REPLACE INTO plans (id, name, cpu, cpu_request, memory, memory_request, price_per_hour) VALUES (?, ?, ?, ?, ?, ?, ?)');
+insertPlan.run('p-tiny', 'Tiny (Free)', '25m', '5m', '64Mi', '32Mi', 0);
+insertPlan.run('p-small', 'Small', '100m', '10m', '128Mi', '64Mi', 50); // 0.50 INR
+insertPlan.run('p-medium', 'Medium', '500m', '50m', '512Mi', '128Mi', 200); // 2.00 INR
+insertPlan.run('p-large', 'Large', '1000m', '100m', '1024Mi', '256Mi', 400); // 4.00 INR
 
 
 // transactions

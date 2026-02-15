@@ -83,18 +83,9 @@ class K8sService {
     });
   }
 
-  async createQuota(namespace, plan) {
-    const cpu = plan?.cpu || '500m';
-    const memory = plan?.memory || '512Mi';
-    // For quota, maybe give a bit more buffer or strict?
-    // Let's set the quota to the plan limit for now (assuming 1 replica)
-    // or maybe 2x to allow rolling updates?
-    // Let's simplify: hard limit same as Pod limit * 2 for buffer
-
-    // We need to parse units properly to multiply, but k8s handles strings.
-    // For simplicity, let's just set a generous hard quota or match the plan.
-    // Actually, let's hardcode a default "User Quota" or per-namespace quota matching the plan.
-
+  async createQuota(namespace) {
+    // Only limit pod count. Per-container resource limits enforce CPU/memory caps.
+    // pods: 2 allows rolling updates (old + new pod coexist briefly)
     await this.core.createNamespacedResourceQuota({
       namespace,
       body: {
@@ -103,10 +94,6 @@ class K8sService {
         },
         spec: {
           hard: {
-            'requests.cpu': cpu,
-            'requests.memory': memory,
-            'limits.cpu': cpu,
-            'limits.memory': memory,
             pods: '2'
           }
         }
@@ -115,7 +102,9 @@ class K8sService {
   }
 
   async createDeployment({ namespace, image, containerPort, plan, env, command, args }) {
-    const cpu = plan?.cpu || '100m';
+    const cpuRequest = plan?.cpu_request || '10m';
+    const cpuLimit = plan?.cpu || '100m';
+    const memoryRequest = plan?.memory_request || plan?.memory || '128Mi';
     const memory = plan?.memory || '128Mi';
 
     const container = {
@@ -123,8 +112,8 @@ class K8sService {
       image,
       ports: [{ containerPort }],
       resources: {
-        requests: { cpu, memory },
-        limits: { cpu, memory }
+        requests: { cpu: cpuRequest, memory: memoryRequest },
+        limits: { cpu: cpuLimit, memory }
       }
     };
 
@@ -146,6 +135,13 @@ class K8sService {
         metadata: { name: 'app' },
         spec: {
           replicas: 1,
+          strategy: {
+            type: 'RollingUpdate',
+            rollingUpdate: {
+              maxSurge: 1,
+              maxUnavailable: 0
+            }
+          },
           selector: { matchLabels: { app: 'app' } },
           template: {
             metadata: { labels: { app: 'app' } },
@@ -155,6 +151,53 @@ class K8sService {
           }
         }
       }
+    });
+  }
+
+  async updateDeployment({ namespace, image, containerPort, plan, env, command, args }) {
+    const cpuRequest = plan?.cpu_request || '10m';
+    const cpuLimit = plan?.cpu || '100m';
+    const memoryRequest = plan?.memory_request || plan?.memory || '128Mi';
+    const memory = plan?.memory || '128Mi';
+
+    const container = {
+      name: 'app',
+      image,
+      ports: [{ containerPort }],
+      resources: {
+        requests: { cpu: cpuRequest, memory: memoryRequest },
+        limits: { cpu: cpuLimit, memory }
+      }
+    };
+
+    if (env && Array.isArray(env)) {
+      container.env = env;
+    }
+
+    if (command && Array.isArray(command)) {
+      container.command = command;
+    }
+
+    if (args && Array.isArray(args)) {
+      container.args = args;
+    }
+
+    // Read current deployment, modify, and replace (zero-downtime rolling update)
+    const current = await this.apps.readNamespacedDeployment({ name: 'app', namespace });
+
+    current.spec.template.spec.containers = [container];
+    current.spec.strategy = {
+      type: 'RollingUpdate',
+      rollingUpdate: {
+        maxSurge: 1,
+        maxUnavailable: 0
+      }
+    };
+
+    await this.apps.replaceNamespacedDeployment({
+      name: 'app',
+      namespace,
+      body: current
     });
   }
 

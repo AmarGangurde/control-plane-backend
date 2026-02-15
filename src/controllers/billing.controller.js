@@ -57,12 +57,21 @@ export const handleCallback = (req, res) => {
         const { merchantTransactionId, state } = callbackData.payload;
 
         if (state === 'COMPLETED') {
-            const transaction = db.prepare('SELECT * FROM transactions WHERE external_id = ? AND status = \'pending\'').get(merchantTransactionId);
-            if (transaction) {
-                db.prepare('UPDATE transactions SET status = \'success\' WHERE external_id = ?').run(merchantTransactionId);
-                updateUserBalance(transaction.user_id, Math.abs(transaction.amount));
-                logger.info(`Payment successful for transaction ${merchantTransactionId}`);
-            }
+            // Idempotent: atomic UPDATE only changes 'pending' rows.
+            // Duplicate callbacks will see changes=0 and skip crediting.
+            const tx = db.transaction(() => {
+                const result = db.prepare('UPDATE transactions SET status = \'success\' WHERE external_id = ? AND status = \'pending\'')
+                    .run(merchantTransactionId);
+
+                if (result.changes > 0) {
+                    const transaction = db.prepare('SELECT * FROM transactions WHERE external_id = ?').get(merchantTransactionId);
+                    updateUserBalance(transaction.user_id, Math.abs(transaction.amount));
+                    logger.info(`Payment successful for transaction ${merchantTransactionId}`);
+                } else {
+                    logger.info(`Duplicate callback ignored for transaction ${merchantTransactionId}`);
+                }
+            });
+            tx();
         }
 
         res.status(200).json({ success: true });

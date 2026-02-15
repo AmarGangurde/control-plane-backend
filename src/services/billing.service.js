@@ -80,7 +80,7 @@ export const stopPodBilling = (podId) => {
 
 /**
  * Global billing loop.
- * Runs every 60 seconds.
+ * Runs every 10 seconds.
  */
 export const runBillingLoop = async () => {
     const now = Math.floor(Date.now() / 1000);
@@ -120,10 +120,22 @@ export const runBillingLoop = async () => {
 
                 // 5. Deduct the cost from the reserve
                 if (cost > 0) {
-                    currentReserved -= cost;
-                    // Deduct from user's global reserved pool
-                    db.prepare('UPDATE users SET reserved_balance = MAX(0, reserved_balance - ?) WHERE id = ?')
-                        .run(cost, currentApp.user_id);
+                    // Clamp: only deduct what's actually reserved for this app
+                    const reserveDeduction = Math.min(cost, currentApp.reserved_amount);
+                    const overflow = cost - reserveDeduction;
+                    currentReserved = Math.max(0, currentApp.reserved_amount - cost);
+
+                    // Deduct from user's global reserved pool (only the reserved portion)
+                    if (reserveDeduction > 0) {
+                        db.prepare('UPDATE users SET reserved_balance = MAX(0, reserved_balance - ?) WHERE id = ?')
+                            .run(reserveDeduction, currentApp.user_id);
+                    }
+
+                    // If cost exceeded reserve, deduct overflow directly from balance
+                    if (overflow > 0) {
+                        db.prepare('UPDATE users SET balance = MAX(0, balance - ?) WHERE id = ?')
+                            .run(overflow, currentApp.user_id);
+                    }
                 }
 
                 // 6. Proactive Re-reservation (Top up reserve if below 10 mins threshold)
