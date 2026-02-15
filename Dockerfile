@@ -9,8 +9,8 @@ COPY . .
 FROM node:20-alpine
 WORKDIR /app
 
-# Install dependencies needed for better-sqlite3 (native build)
-RUN apk add --no-cache python3 make g++ 
+# Install dependencies needed for better-sqlite3 (native build) + skopeo for image port detection
+RUN apk add --no-cache python3 make g++ skopeo
 
 COPY --from=builder /app/package*.json ./
 COPY --from=builder /app/node_modules ./node_modules
