@@ -89,24 +89,26 @@ export const runBillingLoop = async () => {
 
     for (const app of apps) {
         try {
+            let shouldKill = false;
+
             const tx = db.transaction(() => {
                 // 1. RE-FETCH inside transaction to avoid race conditions with stopPodBilling
                 const currentApp = db.prepare('SELECT * FROM apps WHERE id = ? AND status = \'running\'').get(app.id);
-                if (!currentApp) return;
+                if (!currentApp) return { processed: false };
 
                 const elapsedSeconds = now - currentApp.last_billed_at;
-                if (elapsedSeconds <= 0) return;
+                if (elapsedSeconds <= 0) return { processed: false };
 
                 // 2. Handle Free Apps (0 rate)
                 if (currentApp.hourly_rate <= 0) {
                     db.prepare('UPDATE apps SET last_billed_at = ? WHERE id = ?').run(now, currentApp.id);
-                    return;
+                    return { processed: true };
                 }
 
                 const costFloat = (currentApp.hourly_rate * elapsedSeconds) / 3600;
 
                 // 3. Only charge if we have accumulated at least 1 Paise of cost
-                if (costFloat < 1) return;
+                if (costFloat < 1) return { processed: false };
 
                 const cost = Math.floor(costFloat);
 
@@ -150,8 +152,9 @@ export const runBillingLoop = async () => {
                         currentReserved += topupAmount;
                         logger.info(`Auto-reserved for app ${currentApp.id} (+${topupAmount} paise)`);
                     } else if (currentReserved <= 0) {
-                        // If reserve is literally empty and no wallet balance, kill pod
-                        throw new Error('OUT_OF_BALANCE');
+                        // If reserve is literally empty and no wallet balance, mark for kill
+                        // We do NOT throw here because we need to commit the usage deduction first!
+                        shouldKill = true;
                     }
                 }
 
@@ -163,18 +166,18 @@ export const runBillingLoop = async () => {
                         last_billed_at = ?
                     WHERE id = ?
                 `).run(currentReserved, cost, actualLastBilledAt, currentApp.id);
+
+                return { processed: true, shouldKill };
             });
 
-            try {
-                tx();
-            } catch (err) {
-                if (err.message === 'OUT_OF_BALANCE') {
-                    logger.warn(`App ${app.id} stopped due to insufficient balance`);
-                    // Fetch full app record again for the kill service
-                    const fullApp = db.prepare('SELECT * FROM apps WHERE id = ?').get(app.id);
+            const result = tx();
+
+            if (result && result.shouldKill) {
+                logger.warn(`App ${app.id} stopped due to insufficient balance`);
+                // Fetch full app record again for the kill service
+                const fullApp = db.prepare('SELECT * FROM apps WHERE id = ?').get(app.id);
+                if (fullApp) {
                     await killAppCompletely(fullApp);
-                } else {
-                    throw err;
                 }
             }
         } catch (err) {
