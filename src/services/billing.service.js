@@ -80,67 +80,73 @@ export const stopPodBilling = (podId) => {
  */
 export const runBillingLoop = async () => {
     const now = Math.floor(Date.now() / 1000);
-    const apps = db.prepare("SELECT * FROM apps WHERE status = 'running'").all();
+    // Fetch minimal info for the loop; we re-fetch inside the transaction for accuracy
+    const apps = db.prepare("SELECT id FROM apps WHERE status = 'running'").all();
 
     for (const app of apps) {
         try {
-            const elapsedSeconds = now - app.last_billed_at;
-            if (elapsedSeconds <= 0) continue;
-
-            // Cost = (elapsed / 3600) * hourlyRate
-            // To prevent "0 cost" loops for cheap plans (e.g. 50 paise/hr):
-            // We use a high-precision accumulator or simply allow float substraction in memory but store int in DB?
-            // BETTER: We track 'last_billed_at' precisely. 
-            // If the calculated cost is < 1 paise, WE DO NOTHING THIS TICK. We wait for more time to elapse.
-
-            const costFloat = (app.hourly_rate * elapsedSeconds) / 3600;
-
-            // Only charge if we have accumulated at least 1 Paise of cost
-            if (costFloat < 1) continue;
-
-            const cost = Math.floor(costFloat);
-
             const tx = db.transaction(() => {
-                let currentReserved = app.reserved_amount;
+                // 1. RE-FETCH inside transaction to avoid race conditions with stopPodBilling
+                const currentApp = db.prepare('SELECT * FROM apps WHERE id = ? AND status = \'running\'').get(app.id);
+                if (!currentApp) return;
 
-                // 1. Charge the cost from the reserve
+                const elapsedSeconds = now - currentApp.last_billed_at;
+                if (elapsedSeconds <= 0) return;
+
+                // 2. Handle Free Apps (0 rate)
+                if (currentApp.hourly_rate <= 0) {
+                    db.prepare('UPDATE apps SET last_billed_at = ? WHERE id = ?').run(now, currentApp.id);
+                    return;
+                }
+
+                const costFloat = (currentApp.hourly_rate * elapsedSeconds) / 3600;
+
+                // 3. Only charge if we have accumulated at least 1 Paise of cost
+                if (costFloat < 1) return;
+
+                const cost = Math.floor(costFloat);
+
+                // 4. PRECISION FIX: Calculate exactly how many seconds we are charging for.
+                // This ensures we don't 'throw away' the remaining fractional paise.
+                // Example: If costFloat was 1.9, we charge 1 paise and only 'consume' 1 paise's worth of seconds.
+                const secondsCharged = Math.floor((cost * 3600) / currentApp.hourly_rate);
+                const actualLastBilledAt = currentApp.last_billed_at + secondsCharged;
+
+                let currentReserved = currentApp.reserved_amount;
+
+                // 5. Deduct the cost from the reserve
                 if (cost > 0) {
                     currentReserved -= cost;
                     // Deduct from user's global reserved pool
-                    db.prepare('UPDATE users SET reserved_balance = reserved_balance - ? WHERE id = ?')
-                        .run(cost, app.user_id);
+                    db.prepare('UPDATE users SET reserved_balance = MAX(0, reserved_balance - ?) WHERE id = ?')
+                        .run(cost, currentApp.user_id);
                 }
 
-                // 2. Proactive Re-reservation (Top up reserve if below 10 mins threshold)
-                const tenMinsCost = Math.ceil(app.hourly_rate / 6);
+                // 6. Proactive Re-reservation (Top up reserve if below 10 mins threshold)
+                const tenMinsCost = Math.ceil(currentApp.hourly_rate / 6);
                 if (currentReserved < tenMinsCost) {
-                    const topupAmount = tenMinsCost; // Top up another 10 mins
-                    const user = db.prepare('SELECT balance FROM users WHERE id = ?').get(app.user_id);
+                    const topupAmount = Math.max(tenMinsCost, currentApp.hourly_rate); // Top up to at least 1 hour or 10 mins
+                    const user = db.prepare('SELECT balance FROM users WHERE id = ?').get(currentApp.user_id);
 
                     if (user && user.balance >= topupAmount) {
                         db.prepare('UPDATE users SET balance = balance - ?, reserved_balance = reserved_balance + ? WHERE id = ?')
-                            .run(topupAmount, topupAmount, app.user_id);
+                            .run(topupAmount, topupAmount, currentApp.user_id);
                         currentReserved += topupAmount;
-
-                        logger.info(`Auto-reserved 10m for app ${app.id} (+${topupAmount} paise)`);
-                        // We DON'T log 'reservation_topup' in transactions to avoid clutter.
-                        // The user sees their balance decrease and reserved pool increase in UI.
-                    } else {
+                        logger.info(`Auto-reserved for app ${currentApp.id} (+${topupAmount} paise)`);
+                    } else if (currentReserved <= 0) {
                         // If reserve is literally empty and no wallet balance, kill pod
-                        if (currentReserved <= 0) {
-                            throw new Error('OUT_OF_BALANCE');
-                        }
+                        throw new Error('OUT_OF_BALANCE');
                     }
                 }
 
-                // 3. Update app status
+                // 7. Update app billing state
                 db.prepare(`
                     UPDATE apps SET 
                         reserved_amount = ?,
                         total_charged = total_charged + ?,
                         last_billed_at = ?
                     WHERE id = ?
-                `).run(currentReserved, cost, now, app.id);
+                `).run(currentReserved, cost, actualLastBilledAt, currentApp.id);
             });
 
             try {
@@ -148,7 +154,9 @@ export const runBillingLoop = async () => {
             } catch (err) {
                 if (err.message === 'OUT_OF_BALANCE') {
                     logger.warn(`App ${app.id} stopped due to insufficient balance`);
-                    await killAppCompletely(app);
+                    // Fetch full app record again for the kill service
+                    const fullApp = db.prepare('SELECT * FROM apps WHERE id = ?').get(app.id);
+                    await killAppCompletely(fullApp);
                 } else {
                     throw err;
                 }
