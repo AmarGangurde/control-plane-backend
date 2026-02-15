@@ -60,10 +60,10 @@ export const stopPodBilling = (podId) => {
         }
 
         // Log the FINAL USAGE SUMMARY (The total cost of the pod's life)
-        // We use a negative amount to show it as an "Expense" in the list, but it DOES NOT affect balance (balance was already deducted incrementally)
+        // This is a receipt for transparency; the frontend will display it as a non-deductible report.
         if (app.total_charged > 0) {
             db.prepare('INSERT INTO transactions (id, user_id, amount, type, status, external_id) VALUES (?, ?, ?, ?, ?, ?)')
-                .run(uuidv4(), app.user_id, -app.total_charged, 'usage_report', 'success', `Total Cost: ${app.name}`);
+                .run(uuidv4(), app.user_id, -app.total_charged, 'pod_burn_receipt', 'success', app.name);
         }
 
         // Reset app billing fields
