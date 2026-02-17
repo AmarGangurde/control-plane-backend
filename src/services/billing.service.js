@@ -165,7 +165,7 @@ export const runBillingLoop = async () => {
 
                 // 4. PRECISION FIX
                 const secondsCharged = Math.floor((cost * 3600) / currentApp.hourly_rate);
-                const actualLastBilledAt = currentApp.last_billed_at + secondsCharged;
+                const actualLastBilledAt = Number(currentApp.last_billed_at) + secondsCharged;
 
                 let currentReserved = currentApp.reserved_amount;
 
