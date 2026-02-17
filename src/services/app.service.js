@@ -8,7 +8,7 @@ export const killAppCompletely = async (app) => {
         logger.info('killAppCompletely called', { id: app.id, namespace: app.namespace });
 
         // Refund any reserved amount before deleting
-        stopPodBilling(app.id);
+        await stopPodBilling(app.id);
 
         if (app.namespace) {
             await k8sService.deleteNamespace(app.namespace);
@@ -19,6 +19,6 @@ export const killAppCompletely = async (app) => {
         logger.error('error deleting namespace in killAppCompletely', err?.message || err);
     }
 
-    deleteAppById(app.id);
+    await deleteAppById(app.id);
     return true;
 };

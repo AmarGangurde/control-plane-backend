@@ -1,18 +1,36 @@
+version: '3.8'
+
 services:
-  control-plane:
-    image: ghcr.io/amargangurde/control-plane-backend:latest
-    container_name: backend-app
+  postgres:
+    image: postgres:16-alpine
+    container_name: wrexer-postgres
+    restart: unless-stopped
     environment:
-      - NODE_ENV=production
-    network_mode: host
+      POSTGRES_USER: wrexer
+      POSTGRES_PASSWORD: wrexer_secret
+      POSTGRES_DB: wrexer
     volumes:
-      - ./data:/app/data
-      - /home/ubuntu/.kube/config:/home/node/.kube/config:ro
-      - /home/ubuntu/.kube/config:/app/k3s.yaml:ro
-      - ./.env:/app/.env:ro
-    restart: always
-    logging:
-      driver: "json-file"
-      options:
-        max-size: "10m"
-        max-file: "3"
+      - ./pgdata:/var/lib/postgresql/data
+    ports:
+      - "5432:5432"
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U wrexer"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+
+  backend:
+    image: ghcr.io/wrexer-cloud/control-plane-backend:latest
+    container_name: wrexer-backend
+    restart: unless-stopped
+    env_file:
+      - .env
+    environment:
+      - DATABASE_URL=postgresql://wrexer:wrexer_secret@postgres:5432/wrexer
+    volumes:
+      - /etc/rancher/k3s/k3s.yaml:/app/k3s.yaml:ro
+    ports:
+      - "3000:3000"
+    depends_on:
+      postgres:
+        condition: service_healthy

@@ -1,6 +1,17 @@
 import fetch from 'node-fetch';
 import { createUser, getUserByEmail } from '../models/user.model.js';
-import { createApiKey, getApiKeyByName, getApiKey } from '../models/apiKey.model.js';
+import { createApiKeyForUser, getApiKeyInfoForUser } from '../models/apiKey.model.js';
+import { signJwt } from '../middleware/auth.js';
+
+const isProd = process.env.NODE_ENV === 'production' || process.env.NODE_ENV === 'PROD';
+
+const COOKIE_OPTIONS = {
+  httpOnly: true,
+  secure: isProd,
+  sameSite: isProd ? 'strict' : 'lax',
+  maxAge: 7 * 24 * 60 * 60 * 1000, // 7 days
+  path: '/',
+};
 
 // POST /auth/google
 // body: { id_token }
@@ -12,9 +23,7 @@ export const googleSignIn = async (req, res) => {
   try {
     // verify token with Google's tokeninfo endpoint
     const verifyRes = await fetch(
-      `https://oauth2.googleapis.com/tokeninfo?id_token=${encodeURIComponent(
-        id_token
-      )}`
+      `https://oauth2.googleapis.com/tokeninfo?id_token=${encodeURIComponent(id_token)}`
     );
 
     if (!verifyRes.ok) {
@@ -23,37 +32,23 @@ export const googleSignIn = async (req, res) => {
     }
 
     const payload = await verifyRes.json();
-
-    // tokeninfo returns fields like email, email_verified
     const { email, email_verified, sub: googleId } = payload;
 
     if (!email || (email_verified !== 'true' && email_verified !== true)) {
       return res.status(401).json({ error: 'email not verified' });
     }
 
-    let user = getUserByEmail(email);
+    let user = await getUserByEmail(email);
     if (!user) {
-      user = createUser(googleId, email);
+      user = await createUser(googleId, email);
     }
 
-    // For backward compatibility / ease of use, we can still issue an API Key for this user
-    // In a real app we'd use a JWT session for the frontend.
-    // For this MVP, let's link an API key to the email (which is unique per user).
-    // If key exists, return it. If not, create it.
-    // Note: Ideally we should link keys to user_id, but our legacy scheme binds to name/email.
-    // Let's stick to the existing apiKey model for the "token" part, but return the User object.
+    // Issue JWT and set as HttpOnly cookie
+    const token = signJwt(user.id, user.email);
 
-    let keyRecord = getApiKeyByName(email);
-    let key;
-    if (keyRecord) {
-      key = keyRecord.key;
-    } else {
-      key = createApiKey(email);
-    }
+    res.cookie('session', token, COOKIE_OPTIONS);
 
-    // Return the key and the user object
     return res.status(200).json({
-      key,
       user: {
         id: user.id,
         email: user.email,
@@ -67,3 +62,54 @@ export const googleSignIn = async (req, res) => {
   }
 };
 
+// POST /auth/logout
+export const logout = (_req, res) => {
+  res.clearCookie('session', { path: '/' });
+  return res.status(200).json({ success: true });
+};
+
+// GET /auth/me — returns current user info from the JWT session
+export const getMe = async (req, res) => {
+  // req.user is set by the requireAuth middleware
+  return res.status(200).json({
+    user: {
+      id: req.user.id,
+      email: req.user.email,
+      balance: req.user.balance
+    }
+  });
+};
+
+// POST /auth/api-key — creates or replaces the user's API key
+export const createUserApiKey = async (req, res) => {
+  try {
+    const { rawKey, keyPrefix } = await createApiKeyForUser(req.user.id, req.user.email);
+    return res.status(201).json({
+      key: rawKey, // shown ONCE to the user
+      prefix: keyPrefix,
+      message: 'API key created. This key will only be shown once. Store it securely.'
+    });
+  } catch (err) {
+    console.error('createUserApiKey error', err?.message || err);
+    return res.status(500).json({ error: 'Failed to create API key' });
+  }
+};
+
+// GET /auth/api-key — returns key metadata (prefix only, not the full key)
+export const getApiKeyStatus = async (req, res) => {
+  try {
+    const keyInfo = await getApiKeyInfoForUser(req.user.id);
+    if (!keyInfo) {
+      return res.status(200).json({ hasKey: false });
+    }
+    return res.status(200).json({
+      hasKey: true,
+      prefix: keyInfo.key_prefix,
+      name: keyInfo.name,
+      created_at: keyInfo.created_at
+    });
+  } catch (err) {
+    console.error('getApiKeyStatus error', err?.message || err);
+    return res.status(500).json({ error: 'Failed to fetch API key status' });
+  }
+};

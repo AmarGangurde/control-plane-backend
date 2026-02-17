@@ -58,6 +58,12 @@ jobs:
             git fetch origin main
             git reset --hard origin/main
             
+            # Ensure PostgreSQL data directory exists
+            mkdir -p ~/control-plane-backend/pgdata
+            
+            echo "🐳 Pulling latest images..."
+            docker compose pull
+            
             echo "🚀 Starting updated containers..."
             docker compose up -d
             

@@ -6,8 +6,8 @@ import { v4 as uuidv4 } from 'uuid';
 import { frontendUrl, apiBase } from '../config/env.js';
 import logger from '../utils/logger.js';
 
-export const listPlans = (req, res) => {
-    const plans = getPlans();
+export const listPlans = async (req, res) => {
+    const plans = await getPlans();
     res.json(plans);
 };
 
@@ -29,13 +29,13 @@ export const initiatePayment = async (req, res) => {
     const transactionId = `TXN_${uuidv4().split('-')[0].toUpperCase()}`;
     const amountPaise = amount * 100;
 
-    // Create pending transaction in our DB (Stored as Paise)
-    db.prepare(`
-        INSERT INTO transactions (id, user_id, amount, type, status, external_id)
-        VALUES (?, ?, ?, 'topup', 'pending', ?)
-    `).run(uuidv4(), userId, amountPaise, transactionId);
+    // Create pending transaction
+    await db.query(
+        `INSERT INTO transactions (id, user_id, amount, type, status, external_id)
+         VALUES ($1, $2, $3, 'topup', 'pending', $4)`,
+        [uuidv4(), userId, amountPaise, transactionId]
+    );
 
-    // Using the SDK-style request builder
     const request = StandardCheckoutPayRequest.builder()
         .merchantOrderId(transactionId)
         .amount(amountPaise)
@@ -48,7 +48,7 @@ export const initiatePayment = async (req, res) => {
     res.json({ url: response.redirectUrl });
 };
 
-export const handleCallback = (req, res) => {
+export const handleCallback = async (req, res) => {
     try {
         const auth = req.headers['x-verify'] || req.headers['authorization'];
         const responseBody = req.body;
@@ -57,21 +57,35 @@ export const handleCallback = (req, res) => {
         const { merchantTransactionId, state } = callbackData.payload;
 
         if (state === 'COMPLETED') {
-            // Idempotent: atomic UPDATE only changes 'pending' rows.
-            // Duplicate callbacks will see changes=0 and skip crediting.
-            const tx = db.transaction(() => {
-                const result = db.prepare('UPDATE transactions SET status = \'success\' WHERE external_id = ? AND status = \'pending\'')
-                    .run(merchantTransactionId);
+            const client = await db.getClient();
+            try {
+                await client.query('BEGIN');
+                const updateResult = await client.query(
+                    "UPDATE transactions SET status = 'success' WHERE external_id = $1 AND status = 'pending'",
+                    [merchantTransactionId]
+                );
 
-                if (result.changes > 0) {
-                    const transaction = db.prepare('SELECT * FROM transactions WHERE external_id = ?').get(merchantTransactionId);
-                    updateUserBalance(transaction.user_id, Math.abs(transaction.amount));
+                if (updateResult.rowCount > 0) {
+                    const { rows } = await client.query(
+                        'SELECT * FROM transactions WHERE external_id = $1',
+                        [merchantTransactionId]
+                    );
+                    const transaction = rows[0];
+                    await client.query(
+                        'UPDATE users SET balance = balance + $1 WHERE id = $2',
+                        [Math.abs(transaction.amount), transaction.user_id]
+                    );
                     logger.info(`Payment successful for transaction ${merchantTransactionId}`);
                 } else {
                     logger.info(`Duplicate callback ignored for transaction ${merchantTransactionId}`);
                 }
-            });
-            tx();
+                await client.query('COMMIT');
+            } catch (err) {
+                await client.query('ROLLBACK');
+                throw err;
+            } finally {
+                client.release();
+            }
         }
 
         res.status(200).json({ success: true });
@@ -81,11 +95,11 @@ export const handleCallback = (req, res) => {
     }
 };
 
-export const processMockSuccess = (req, res) => {
+export const processMockSuccess = async (req, res) => {
     const { tid } = req.query;
 
-    // Simulate S2S Callback first (how PhonePe actually works)
-    const transaction = db.prepare('SELECT * FROM transactions WHERE external_id = ?').get(tid);
+    const { rows } = await db.query('SELECT * FROM transactions WHERE external_id = $1', [tid]);
+    const transaction = rows[0];
     if (!transaction) return res.status(404).send('Not Found');
 
     const callbackPayload = {
@@ -96,7 +110,7 @@ export const processMockSuccess = (req, res) => {
             merchantId: 'MOCK_MERCHANT_ID',
             merchantTransactionId: tid,
             transactionId: `T${Date.now()}`,
-            amount: transaction.amount, // Already in Paise
+            amount: transaction.amount,
             state: 'COMPLETED',
             responseCode: 'SUCCESS'
         }
@@ -104,38 +118,39 @@ export const processMockSuccess = (req, res) => {
 
     const auth = phonepeService.generateChecksum(Buffer.from(JSON.stringify(callbackPayload)).toString('base64'), '');
 
-    // Execute internal callback
     try {
         const mockReq = { headers: { 'x-verify': auth }, body: callbackPayload };
-        handleCallback(mockReq, { status: () => ({ json: () => { } }) });
+        await handleCallback(mockReq, { status: () => ({ json: () => { } }) });
     } catch (e) { }
 
     res.redirect(`${frontendUrl}/billing?topup=success`);
 };
 
-export const getTransactions = (req, res) => {
+export const getTransactions = async (req, res) => {
     // Auto-expire stale pending topups older than 30 minutes
-    db.prepare(`
+    await db.query(`
         UPDATE transactions 
         SET status = 'expired' 
         WHERE status = 'pending' 
         AND type = 'topup'
-        AND created_at < datetime('now', '-30 minutes')
-    `).run();
+        AND created_at < NOW() - INTERVAL '30 minutes'
+    `);
 
-    const transactions = db.prepare(`
-        SELECT * FROM transactions 
-        WHERE user_id = ? 
-        ORDER BY created_at DESC 
-        LIMIT 50
-    `).all(req.user.id);
+    const { rows } = await db.query(
+        `SELECT * FROM transactions 
+         WHERE user_id = $1 
+         ORDER BY created_at DESC 
+         LIMIT 50`,
+        [req.user.id]
+    );
 
-    res.json(transactions);
+    res.json(rows);
 };
 
-export const mockCheckout = (req, res) => {
+export const mockCheckout = async (req, res) => {
     const { tid } = req.query;
-    const transaction = db.prepare('SELECT * FROM transactions WHERE external_id = ?').get(tid);
+    const { rows } = await db.query('SELECT * FROM transactions WHERE external_id = $1', [tid]);
+    const transaction = rows[0];
 
     if (!transaction) return res.status(404).send('Transaction not found');
 
@@ -208,15 +223,17 @@ export const mockCheckout = (req, res) => {
     `);
 };
 
-export const cancelPayment = (req, res) => {
+export const cancelPayment = async (req, res) => {
     const { tid } = req.query;
 
     if (!tid) return res.status(400).send('Missing transaction ID');
 
-    // Atomically mark as cancelled only if still pending
-    const result = db.prepare('UPDATE transactions SET status = \'cancelled\' WHERE external_id = ? AND status = \'pending\'').run(tid);
+    const result = await db.query(
+        "UPDATE transactions SET status = 'cancelled' WHERE external_id = $1 AND status = 'pending'",
+        [tid]
+    );
 
-    if (result.changes > 0) {
+    if (result.rowCount > 0) {
         logger.info(`Transaction ${tid} cancelled by user`);
     }
 

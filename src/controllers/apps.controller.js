@@ -10,16 +10,14 @@ import {
   updateAppDetails
 } from '../models/app.model.js';
 import { getPlanById } from '../models/plan.model.js';
-import { updateUserBalance } from '../models/user.model.js';
 import { killAppCompletely } from '../services/app.service.js';
 import imageService from '../services/image.service.js';
 import { startPodBilling } from '../services/billing.service.js';
-import db from '../db/db.js'; // Added to ensure free plan logic is safe
+import db from '../db/db.js';
 
 export const createApp = async (req, res) => {
   try {
     const { image, port, planId = 'p-small', name, env, command, args } = req.body;
-    const apiKey = req.apiKey;
     const user = req.user;
 
     if (!name) {
@@ -30,14 +28,14 @@ export const createApp = async (req, res) => {
     const sanitizedName = name.toLowerCase().replace(/[^a-z0-9]/g, '-').replace(/-+/g, '-').replace(/^-|-$/g, '');
 
     // Checking plan
-    const plan = getPlanById(planId);
+    const plan = await getPlanById(planId);
     if (!plan) {
       return res.status(400).json({ error: 'invalid plan' });
     }
 
     // Tiny plan restriction: 1 per account
     if (plan.id === 'p-tiny') {
-      const existingApps = listAppsByUserId(user.id);
+      const existingApps = await listAppsByUserId(user.id);
       const tinyApp = existingApps.find(a => a.plan_id === 'p-tiny');
       if (tinyApp) {
         return res.status(403).json({ error: 'Tiny plan limit reached. You can only have 1 active Tiny pod.' });
@@ -66,19 +64,17 @@ export const createApp = async (req, res) => {
 
     const appId = uuidv4();
     const planName = plan.id.replace('p-', '');
-    // Namespace: name-plan-random
     const namespace = `${sanitizedName}-${planName}-${appId.split('-')[0]}`;
     const host = `${namespace}.${baseDomain}`;
     const url = `https://${host}`;
 
     // 1. Insert stopped app record first
-    insertApp({
+    await insertApp({
       id: appId,
       name,
       namespace,
       image,
       url,
-      apiKey,
       userId: user.id,
       planId: plan.id,
       containerPort,
@@ -90,16 +86,18 @@ export const createApp = async (req, res) => {
     // 2. Start billing (reserves 1 hour, sets status to 'running')
     if (plan.price_per_hour > 0) {
       try {
-        startPodBilling(appId, user.id, plan.price_per_hour);
+        await startPodBilling(appId, user.id, plan.price_per_hour);
       } catch (err) {
-        // Cleanup if billing fails
-        deleteAppById(appId);
+        await deleteAppById(appId);
         return res.status(402).json({ error: err.message });
       }
     } else {
       // For free plan, just mark it as running in DB
-      db.prepare("UPDATE apps SET status = 'running', started_at = ?, last_billed_at = ? WHERE id = ?")
-        .run(Math.floor(Date.now() / 1000), Math.floor(Date.now() / 1000), appId);
+      const now = Math.floor(Date.now() / 1000);
+      await db.query(
+        "UPDATE apps SET status = 'running', started_at = $1, last_billed_at = $2 WHERE id = $3",
+        [now, now, appId]
+      );
     }
 
     // 3. Create K8s infrastructure
@@ -128,17 +126,15 @@ export const createApp = async (req, res) => {
 };
 
 export const listApps = async (req, res) => {
-  // If we have a user, list by user id. Fallback to key if necessary, 
-  // but we enforce req.user in middleware now.
-  const apps = listAppsByUserId(req.user.id);
+  const apps = await listAppsByUserId(req.user.id);
   res.json(apps);
 };
 
 export const getApp = async (req, res) => {
   try {
-    const app = getAppById(req.params.id);
+    const app = await getAppById(req.params.id);
 
-    if (!app || app.api_key !== req.apiKey) {
+    if (!app || app.user_id !== req.user.id) {
       return res.status(404).json({ error: 'app not found' });
     }
 
@@ -153,9 +149,9 @@ export const getApp = async (req, res) => {
 
 export const getAppLogs = async (req, res) => {
   try {
-    const app = getAppById(req.params.id);
+    const app = await getAppById(req.params.id);
 
-    if (!app || app.api_key !== req.apiKey) {
+    if (!app || app.user_id !== req.user.id) {
       return res.status(404).json({ error: 'app not found' });
     }
 
@@ -169,9 +165,9 @@ export const getAppLogs = async (req, res) => {
 
 export const updateApp = async (req, res) => {
   try {
-    const app = getAppById(req.params.id);
+    const app = await getAppById(req.params.id);
 
-    if (!app || app.api_key !== req.apiKey) {
+    if (!app || app.user_id !== req.user.id) {
       return res.status(404).json({ error: 'app not found' });
     }
 
@@ -181,12 +177,11 @@ export const updateApp = async (req, res) => {
 
     const { image, port, env, command, args } = req.body;
 
-    // At least one field must be provided
     if (!image && !port && (env === undefined) && (command === undefined) && (args === undefined)) {
       return res.status(400).json({ error: 'At least one field (image, port, env, command, args) must be provided' });
     }
 
-    const plan = getPlanById(app.plan_id);
+    const plan = await getPlanById(app.plan_id);
 
     const newImage = image || app.image;
     let newPort = port || app.container_port;
@@ -194,12 +189,10 @@ export const updateApp = async (req, res) => {
     const newCommand = command !== undefined ? command : (app.command || null);
     const newArgs = args !== undefined ? args : (app.args || null);
 
-    // If image changed and no port specified, auto-detect new port
     if (image && image !== app.image && !port) {
       newPort = await imageService.getExposedPort(image);
     }
 
-    // Rolling update in K8s (zero-downtime: maxSurge=1, maxUnavailable=0)
     await k8sService.updateDeployment({
       namespace: app.namespace,
       image: newImage,
@@ -210,8 +203,7 @@ export const updateApp = async (req, res) => {
       args: newArgs
     });
 
-    // Persist changes to DB
-    updateAppDetails(app.id, {
+    await updateAppDetails(app.id, {
       image: newImage,
       containerPort: newPort,
       env: newEnv,
@@ -233,9 +225,9 @@ export const updateApp = async (req, res) => {
 };
 
 export const deleteApp = async (req, res) => {
-  const app = getAppById(req.params.id);
+  const app = await getAppById(req.params.id);
 
-  if (!app || app.api_key !== req.apiKey) {
+  if (!app || app.user_id !== req.user.id) {
     return res.status(404).json({ error: 'app not found' });
   }
 
@@ -243,4 +235,3 @@ export const deleteApp = async (req, res) => {
 
   res.json({ deleted: true });
 };
-

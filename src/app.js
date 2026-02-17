@@ -1,71 +1,75 @@
 import express from 'express';
 import cors from 'cors';
-import billingRoutes from './routes/billing.routes.js';
-import appsRoutes from './routes/apps.routes.js';
-import keysRoutes from './routes/keys.routes.js';
+import cookieParser from 'cookie-parser';
 import authRoutes from './routes/auth.routes.js';
-import { requireApiKey } from './middleware/auth.js';
+import { listApiKeys } from './controllers/keys.controller.js';
+import { createApp, listApps, getApp, getAppLogs, updateApp, deleteApp } from './controllers/apps.controller.js';
+import {
+  listPlans,
+  getBalance,
+  initiatePayment,
+  handleCallback,
+  getTransactions,
+  mockCheckout,
+  processMockSuccess,
+  cancelPayment
+} from './controllers/billing.controller.js';
+import { requireAuth } from './middleware/auth.js';
 import { requireAdminKey } from './middleware/adminAuth.js';
-import { rateLimit } from './middleware/rateLimit.js';
+import { rateLimiter } from './middleware/rateLimit.js';
+import { frontendUrl } from './config/env.js';
 
 const app = express();
 
+// --- Middleware ---
 app.use(express.json());
-// Configure CORS (more secure for production)
+app.use(cookieParser());
+
 const allowedOrigins = [
+  frontendUrl,
+  'http://localhost:5173',
+  'http://localhost:3000',
   'https://wrexer.com',
   'https://www.wrexer.com',
-  process.env.FRONTEND_URL
 ].filter(Boolean);
 
 app.use(cors({
-  origin: (origin, callback) => {
-    // Allow requests with no origin (like mobile apps or curl)
+  origin: function (origin, callback) {
+    // Allow requests with no origin (mobile apps, curl, etc.)
     if (!origin) return callback(null, true);
-    if (allowedOrigins.indexOf(origin) !== -1 || origin.endsWith('.wrexer.com')) {
-      callback(null, true);
-    } else {
-      callback(new Error('Not allowed by CORS'));
-    }
+    if (allowedOrigins.includes(origin)) return callback(null, true);
+    callback(new Error('Not allowed by CORS'));
   },
-  methods: ['GET', 'POST', 'PUT', 'DELETE'],
-  allowedHeaders: ['Content-Type', 'Authorization', 'X-Requested-With'],
-  credentials: true
+  credentials: true, // Required for cookies
 }));
 
-app.get('/health', (_req, res) => {
-  res.json({ status: 'ok' });
-});
+app.use(rateLimiter);
 
-// auth (google sign-in)
-app.use('/api/auth', authRoutes);
+// --- Public Routes ---
+app.use('/auth', authRoutes);
 
-/**
- * Admin-only routes
- */
-app.use(
-  '/api/keys',
-  requireAdminKey,
-  rateLimit('admin'),
-  keysRoutes
-);
+// --- Mock Payment Routes (no auth needed — redirect endpoints) ---
+app.get('/billing/mock-checkout', mockCheckout);
+app.get('/billing/mock-success', processMockSuccess);
+app.get('/billing/mock-cancel', cancelPayment);
 
-/**
- * App routes (API key protected)
- */
-app.use(
-  '/api/apps',
-  requireApiKey,
-  rateLimit('user'),
-  appsRoutes
-);
+// --- Payment Callback (server-to-server, no user auth) ---
+app.post('/billing/callback', handleCallback);
 
-/**
- * Billing routes (Mixed protection)
- */
-app.use(
-  '/api/billing',
-  billingRoutes
-);
+// --- Protected Routes (JWT session or API key) ---
+app.post('/apps', requireAuth, createApp);
+app.get('/apps', requireAuth, listApps);
+app.get('/apps/:id', requireAuth, getApp);
+app.get('/apps/:id/logs', requireAuth, getAppLogs);
+app.put('/apps/:id', requireAuth, updateApp);
+app.delete('/apps/:id', requireAuth, deleteApp);
+
+app.get('/billing/plans', requireAuth, listPlans);
+app.get('/billing/balance', requireAuth, getBalance);
+app.post('/billing/initiate-payment', requireAuth, initiatePayment);
+app.get('/billing/transactions', requireAuth, getTransactions);
+
+// --- Admin Routes ---
+app.get('/admin/keys', requireAdminKey, listApiKeys);
 
 export default app;

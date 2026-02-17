@@ -1,14 +1,14 @@
 import db from '../db/db.js';
 
-export const insertApp = ({ id, name, namespace, image, url, apiKey, userId, planId, containerPort, env, command, args }) => {
+export const insertApp = async ({ id, name, namespace, image, url, userId, planId, containerPort, env, command, args }) => {
   const envStr = env ? JSON.stringify(env) : null;
   const cmdStr = command ? JSON.stringify(command) : null;
   const argStr = args ? JSON.stringify(args) : null;
 
-  db.prepare(`
-    INSERT INTO apps (id, name, namespace, image, url, api_key, user_id, plan_id, container_port, env, command, args, last_charged_at)
-    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP)
-  `).run(id, name, namespace, image, url, apiKey, userId, planId, containerPort, envStr, cmdStr, argStr);
+  await db.query(`
+    INSERT INTO apps (id, name, namespace, image, url, user_id, plan_id, container_port, env, command, args, last_charged_at)
+    VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, NOW())
+  `, [id, name, namespace, image, url, userId, planId, containerPort, envStr, cmdStr, argStr]);
 };
 
 const parseApp = (app) => {
@@ -25,49 +25,35 @@ const parseApp = (app) => {
   }
 };
 
-export const getAppById = (id) => {
-  const app = db.prepare(`
-    SELECT * FROM apps WHERE id = ?
-  `).get(id);
-  return parseApp(app);
+export const getAppById = async (id) => {
+  const { rows } = await db.query('SELECT * FROM apps WHERE id = $1', [id]);
+  return parseApp(rows[0] || null);
 };
 
-export const listAppsByKey = (apiKey) => {
-  const apps = db.prepare(`
-    SELECT * FROM apps
-    WHERE api_key = ?
-    ORDER BY created_at DESC
-  `).all(apiKey);
-  return apps.map(parseApp);
+export const listAppsByUserId = async (userId) => {
+  const { rows } = await db.query(
+    'SELECT * FROM apps WHERE user_id = $1 ORDER BY created_at DESC',
+    [userId]
+  );
+  return rows.map(parseApp);
 };
 
-export const listAppsByUserId = (userId) => {
-  const apps = db.prepare(`
-    SELECT * FROM apps
-    WHERE user_id = ?
-    ORDER BY created_at DESC
-  `).all(userId);
-  return apps.map(parseApp);
+export const deleteAppById = async (id) => {
+  await db.query('DELETE FROM apps WHERE id = $1', [id]);
 };
 
-export const deleteAppById = (id) => {
-  db.prepare(`
-    DELETE FROM apps WHERE id = ?
-  `).run(id);
-};
-
-export const updateAppDetails = (id, { image, containerPort, env, command, args }) => {
+export const updateAppDetails = async (id, { image, containerPort, env, command, args }) => {
   const envStr = env ? JSON.stringify(env) : null;
   const cmdStr = command ? JSON.stringify(command) : null;
   const argStr = args ? JSON.stringify(args) : null;
 
-  db.prepare(`
+  await db.query(`
     UPDATE apps SET 
-      image = ?,
-      container_port = ?,
-      env = ?,
-      command = ?,
-      args = ?
-    WHERE id = ?
-  `).run(image, containerPort, envStr, cmdStr, argStr, id);
+      image = $1,
+      container_port = $2,
+      env = $3,
+      command = $4,
+      args = $5
+    WHERE id = $6
+  `, [image, containerPort, envStr, cmdStr, argStr, id]);
 };

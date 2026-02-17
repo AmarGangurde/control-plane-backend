@@ -7,75 +7,110 @@ import { v4 as uuidv4 } from 'uuid';
  * Starts billing for a pod.
  * Deducts 1 hour cost as reserve (in Paise).
  */
-export const startPodBilling = (podId, userId, hourlyRatePaise) => {
+export const startPodBilling = async (podId, userId, hourlyRatePaise) => {
     const now = Math.floor(Date.now() / 1000);
+    const client = await db.getClient();
 
-    const tx = db.transaction(() => {
-        const user = db.prepare('SELECT balance FROM users WHERE id = ?').get(userId);
+    try {
+        await client.query('BEGIN');
+
+        const { rows } = await client.query('SELECT balance FROM users WHERE id = $1 FOR UPDATE', [userId]);
+        const user = rows[0];
         if (!user || user.balance < hourlyRatePaise) {
             throw new Error('Insufficient balance to start pod. Minimum 1 hour credit required.');
         }
 
         // Deduct from balance, add to reserved
-        db.prepare('UPDATE users SET balance = balance - ?, reserved_balance = reserved_balance + ? WHERE id = ?')
-            .run(hourlyRatePaise, hourlyRatePaise, userId);
+        await client.query(
+            'UPDATE users SET balance = balance - $1, reserved_balance = reserved_balance + $2 WHERE id = $3',
+            [hourlyRatePaise, hourlyRatePaise, userId]
+        );
 
         // Log initial reservation in history
-        db.prepare('INSERT INTO transactions (id, user_id, amount, type, status) VALUES (?, ?, ?, ?, ?)')
-            .run(uuidv4(), userId, -hourlyRatePaise, 'reservation', 'success');
+        await client.query(
+            'INSERT INTO transactions (id, user_id, amount, type, status) VALUES ($1, $2, $3, $4, $5)',
+            [uuidv4(), userId, -hourlyRatePaise, 'reservation', 'success']
+        );
 
         // Update app record
-        db.prepare(`
+        await client.query(`
             UPDATE apps SET 
-                hourly_rate = ?,
+                hourly_rate = $1,
                 status = 'running',
-                started_at = ?,
-                last_billed_at = ?,
-                reserved_amount = ?,
+                started_at = $2,
+                last_billed_at = $3,
+                reserved_amount = $4,
                 total_charged = 0
-            WHERE id = ?
-        `).run(hourlyRatePaise, now, now, hourlyRatePaise, podId);
-    });
+            WHERE id = $5
+        `, [hourlyRatePaise, now, now, hourlyRatePaise, podId]);
 
-    tx();
+        await client.query('COMMIT');
+    } catch (err) {
+        await client.query('ROLLBACK');
+        throw err;
+    } finally {
+        client.release();
+    }
 };
 
 /**
  * Stops billing for a pod.
  * Refunds remaining reserved amount (in Paise).
  */
-export const stopPodBilling = (podId) => {
-    const tx = db.transaction(() => {
-        const app = db.prepare('SELECT user_id, reserved_amount, total_charged, name, started_at FROM apps WHERE id = ?').get(podId);
-        if (!app) return;
+export const stopPodBilling = async (podId) => {
+    const client = await db.getClient();
+    try {
+        await client.query('BEGIN');
+
+        const { rows } = await client.query(
+            'SELECT user_id, reserved_amount, total_charged, name, started_at FROM apps WHERE id = $1',
+            [podId]
+        );
+        const app = rows[0];
+        if (!app) {
+            await client.query('COMMIT');
+            return;
+        }
 
         // Refund reserved amount to balance (if any)
         if (app.reserved_amount > 0) {
-            db.prepare('UPDATE users SET balance = balance + ?, reserved_balance = reserved_balance - ? WHERE id = ?')
-                .run(app.reserved_amount, app.reserved_amount, app.user_id);
+            await client.query(
+                'UPDATE users SET balance = balance + $1, reserved_balance = reserved_balance - $2 WHERE id = $3',
+                [app.reserved_amount, app.reserved_amount, app.user_id]
+            );
 
             // Log refund in history
-            db.prepare('INSERT INTO transactions (id, user_id, amount, type, status, external_id) VALUES (?, ?, ?, ?, ?, ?)')
-                .run(uuidv4(), app.user_id, app.reserved_amount, 'refund', 'success', `Refund: ${app.name}`);
+            await client.query(
+                'INSERT INTO transactions (id, user_id, amount, type, status, external_id) VALUES ($1, $2, $3, $4, $5, $6)',
+                [uuidv4(), app.user_id, app.reserved_amount, 'refund', 'success', `Refund: ${app.name}`]
+            );
         }
 
-        // Log the FINAL USAGE SUMMARY (The total cost of the pod's life)
-        // This is a receipt for transparency; the frontend will display it as a non-deductible report.
+        // Log the FINAL USAGE SUMMARY
         if (app.total_charged > 0) {
             const now = Math.floor(Date.now() / 1000);
             const durationSeconds = now - app.started_at;
             const metadata = JSON.stringify({ duration: durationSeconds });
 
-            db.prepare('INSERT INTO transactions (id, user_id, amount, type, status, external_id, metadata) VALUES (?, ?, ?, ?, ?, ?, ?)')
-                .run(uuidv4(), app.user_id, -app.total_charged, 'pod_burn_receipt', 'success', app.name, metadata);
+            await client.query(
+                'INSERT INTO transactions (id, user_id, amount, type, status, external_id, metadata) VALUES ($1, $2, $3, $4, $5, $6, $7)',
+                [uuidv4(), app.user_id, -app.total_charged, 'pod_burn_receipt', 'success', app.name, metadata]
+            );
         }
 
         // Reset app billing fields
-        db.prepare("UPDATE apps SET status = 'stopped', reserved_amount = 0 WHERE id = ?")
-            .run(podId);
-    });
+        await client.query(
+            "UPDATE apps SET status = 'stopped', reserved_amount = 0 WHERE id = $1",
+            [podId]
+        );
 
-    tx();
+        await client.query('COMMIT');
+    } catch (err) {
+        await client.query('ROLLBACK');
+        logger.error('stopPodBilling error:', err.message);
+    } finally {
+        client.release();
+    }
 };
 
 /**
@@ -84,37 +119,51 @@ export const stopPodBilling = (podId) => {
  */
 export const runBillingLoop = async () => {
     const now = Math.floor(Date.now() / 1000);
-    // Fetch minimal info for the loop; we re-fetch inside the transaction for accuracy
-    const apps = db.prepare("SELECT id FROM apps WHERE status = 'running'").all();
+    const { rows: apps } = await db.query("SELECT id FROM apps WHERE status = 'running'");
 
     for (const app of apps) {
         try {
             let shouldKill = false;
+            const client = await db.getClient();
 
-            const tx = db.transaction(() => {
-                // 1. RE-FETCH inside transaction to avoid race conditions with stopPodBilling
-                const currentApp = db.prepare('SELECT * FROM apps WHERE id = ? AND status = \'running\'').get(app.id);
-                if (!currentApp) return { processed: false };
+            try {
+                await client.query('BEGIN');
+
+                // 1. RE-FETCH inside transaction to avoid race conditions
+                const { rows } = await client.query(
+                    "SELECT * FROM apps WHERE id = $1 AND status = 'running' FOR UPDATE",
+                    [app.id]
+                );
+                const currentApp = rows[0];
+                if (!currentApp) {
+                    await client.query('COMMIT');
+                    continue;
+                }
 
                 const elapsedSeconds = now - currentApp.last_billed_at;
-                if (elapsedSeconds <= 0) return { processed: false };
+                if (elapsedSeconds <= 0) {
+                    await client.query('COMMIT');
+                    continue;
+                }
 
                 // 2. Handle Free Apps (0 rate)
                 if (currentApp.hourly_rate <= 0) {
-                    db.prepare('UPDATE apps SET last_billed_at = ? WHERE id = ?').run(now, currentApp.id);
-                    return { processed: true };
+                    await client.query('UPDATE apps SET last_billed_at = $1 WHERE id = $2', [now, currentApp.id]);
+                    await client.query('COMMIT');
+                    continue;
                 }
 
                 const costFloat = (currentApp.hourly_rate * elapsedSeconds) / 3600;
 
                 // 3. Only charge if we have accumulated at least 1 Paise of cost
-                if (costFloat < 1) return { processed: false };
+                if (costFloat < 1) {
+                    await client.query('COMMIT');
+                    continue;
+                }
 
                 const cost = Math.floor(costFloat);
 
-                // 4. PRECISION FIX: Calculate exactly how many seconds we are charging for.
-                // This ensures we don't 'throw away' the remaining fractional paise.
-                // Example: If costFloat was 1.9, we charge 1 paise and only 'consume' 1 paise's worth of seconds.
+                // 4. PRECISION FIX
                 const secondsCharged = Math.floor((cost * 3600) / currentApp.hourly_rate);
                 const actualLastBilledAt = currentApp.last_billed_at + secondsCharged;
 
@@ -122,60 +171,68 @@ export const runBillingLoop = async () => {
 
                 // 5. Deduct the cost from the reserve
                 if (cost > 0) {
-                    // Clamp: only deduct what's actually reserved for this app
                     const reserveDeduction = Math.min(cost, currentApp.reserved_amount);
                     const overflow = cost - reserveDeduction;
                     currentReserved = Math.max(0, currentApp.reserved_amount - cost);
 
-                    // Deduct from user's global reserved pool (only the reserved portion)
                     if (reserveDeduction > 0) {
-                        db.prepare('UPDATE users SET reserved_balance = MAX(0, reserved_balance - ?) WHERE id = ?')
-                            .run(reserveDeduction, currentApp.user_id);
+                        await client.query(
+                            'UPDATE users SET reserved_balance = GREATEST(0, reserved_balance - $1) WHERE id = $2',
+                            [reserveDeduction, currentApp.user_id]
+                        );
                     }
 
-                    // If cost exceeded reserve, deduct overflow directly from balance
                     if (overflow > 0) {
-                        db.prepare('UPDATE users SET balance = MAX(0, balance - ?) WHERE id = ?')
-                            .run(overflow, currentApp.user_id);
+                        await client.query(
+                            'UPDATE users SET balance = GREATEST(0, balance - $1) WHERE id = $2',
+                            [overflow, currentApp.user_id]
+                        );
                     }
                 }
 
-                // 6. Proactive Re-reservation (Top up reserve if below 10 mins threshold)
+                // 6. Proactive Re-reservation
                 const tenMinsCost = Math.ceil(currentApp.hourly_rate / 6);
                 if (currentReserved < tenMinsCost) {
-                    const topupAmount = Math.max(tenMinsCost, currentApp.hourly_rate); // Top up to at least 1 hour or 10 mins
-                    const user = db.prepare('SELECT balance FROM users WHERE id = ?').get(currentApp.user_id);
+                    const topupAmount = Math.max(tenMinsCost, currentApp.hourly_rate);
+                    const { rows: userRows } = await client.query(
+                        'SELECT balance FROM users WHERE id = $1',
+                        [currentApp.user_id]
+                    );
+                    const user = userRows[0];
 
                     if (user && user.balance >= topupAmount) {
-                        db.prepare('UPDATE users SET balance = balance - ?, reserved_balance = reserved_balance + ? WHERE id = ?')
-                            .run(topupAmount, topupAmount, currentApp.user_id);
+                        await client.query(
+                            'UPDATE users SET balance = balance - $1, reserved_balance = reserved_balance + $2 WHERE id = $3',
+                            [topupAmount, topupAmount, currentApp.user_id]
+                        );
                         currentReserved += topupAmount;
                         logger.info(`Auto-reserved for app ${currentApp.id} (+${topupAmount} paise)`);
                     } else if (currentReserved <= 0) {
-                        // If reserve is literally empty and no wallet balance, mark for kill
-                        // We do NOT throw here because we need to commit the usage deduction first!
                         shouldKill = true;
                     }
                 }
 
                 // 7. Update app billing state
-                db.prepare(`
+                await client.query(`
                     UPDATE apps SET 
-                        reserved_amount = ?,
-                        total_charged = total_charged + ?,
-                        last_billed_at = ?
-                    WHERE id = ?
-                `).run(currentReserved, cost, actualLastBilledAt, currentApp.id);
+                        reserved_amount = $1,
+                        total_charged = total_charged + $2,
+                        last_billed_at = $3
+                    WHERE id = $4
+                `, [currentReserved, cost, actualLastBilledAt, currentApp.id]);
 
-                return { processed: true, shouldKill };
-            });
+                await client.query('COMMIT');
+            } catch (err) {
+                await client.query('ROLLBACK');
+                throw err;
+            } finally {
+                client.release();
+            }
 
-            const result = tx();
-
-            if (result && result.shouldKill) {
+            if (shouldKill) {
                 logger.warn(`App ${app.id} stopped due to insufficient balance`);
-                // Fetch full app record again for the kill service
-                const fullApp = db.prepare('SELECT * FROM apps WHERE id = ?').get(app.id);
+                const { rows } = await db.query('SELECT * FROM apps WHERE id = $1', [app.id]);
+                const fullApp = rows[0];
                 if (fullApp) {
                     await killAppCompletely(fullApp);
                 }
