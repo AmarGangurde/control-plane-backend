@@ -35,41 +35,46 @@ const allowedOrigins = [
 
 app.use(cors({
   origin: function (origin, callback) {
-    // Allow requests with no origin (mobile apps, curl, etc.)
     if (!origin) return callback(null, true);
     if (allowedOrigins.includes(origin)) return callback(null, true);
     callback(new Error('Not allowed by CORS'));
   },
-  credentials: true, // Required for cookies
+  credentials: true,
 }));
 
 app.use(rateLimiter);
 
-// --- Public Routes ---
-app.use('/auth', authRoutes);
+// --- All routes under /api to match Nginx proxy_pass ---
+const api = express.Router();
 
-// --- Mock Payment Routes (no auth needed — redirect endpoints) ---
-app.get('/billing/mock-checkout', mockCheckout);
-app.get('/billing/mock-success', processMockSuccess);
-app.get('/billing/mock-cancel', cancelPayment);
+// Public auth routes
+api.use('/auth', authRoutes);
 
-// --- Payment Callback (server-to-server, no user auth) ---
-app.post('/billing/callback', handleCallback);
+// Mock payment routes (no auth — redirect endpoints)
+api.get('/billing/mock-checkout', mockCheckout);
+api.get('/billing/mock-success', processMockSuccess);
+api.get('/billing/mock-cancel', cancelPayment);
 
-// --- Protected Routes (JWT session or API key) ---
-app.post('/apps', requireAuth, createApp);
-app.get('/apps', requireAuth, listApps);
-app.get('/apps/:id', requireAuth, getApp);
-app.get('/apps/:id/logs', requireAuth, getAppLogs);
-app.put('/apps/:id', requireAuth, updateApp);
-app.delete('/apps/:id', requireAuth, deleteApp);
+// Payment callback (server-to-server, no user auth)
+api.post('/billing/callback', handleCallback);
 
-app.get('/billing/plans', requireAuth, listPlans);
-app.get('/billing/balance', requireAuth, getBalance);
-app.post('/billing/initiate-payment', requireAuth, initiatePayment);
-app.get('/billing/transactions', requireAuth, getTransactions);
+// Protected routes (JWT session or API key)
+api.post('/apps', requireAuth, createApp);
+api.get('/apps', requireAuth, listApps);
+api.get('/apps/:id', requireAuth, getApp);
+api.get('/apps/:id/logs', requireAuth, getAppLogs);
+api.put('/apps/:id', requireAuth, updateApp);
+api.delete('/apps/:id', requireAuth, deleteApp);
 
-// --- Admin Routes ---
-app.get('/admin/keys', requireAdminKey, listApiKeys);
+api.get('/billing/plans', requireAuth, listPlans);
+api.get('/billing/balance', requireAuth, getBalance);
+api.post('/billing/initiate-payment', requireAuth, initiatePayment);
+api.get('/billing/transactions', requireAuth, getTransactions);
+
+// Admin routes
+api.get('/admin/keys', requireAdminKey, listApiKeys);
+
+// Mount everything under /api
+app.use('/api', api);
 
 export default app;
