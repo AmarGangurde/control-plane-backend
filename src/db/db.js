@@ -114,6 +114,15 @@ const initDb = async () => {
     await client.query(upsertPlan, ['p-medium', 'Medium', '500m', '50m', '512Mi', '128Mi', 28]);
     await client.query(upsertPlan, ['p-large', 'Large', '1000m', '100m', '1024Mi', '256Mi', 55]);
 
+    // Sync existing apps to new pricing
+    await client.query(`
+      UPDATE apps
+      SET hourly_rate = plans.price_per_hour
+      FROM plans
+      WHERE apps.plan_id = plans.id
+      AND apps.hourly_rate != plans.price_per_hour
+    `);
+
     await client.query('COMMIT');
     logger.info('✅ PostgreSQL schema initialized and plans seeded.');
   } catch (err) {
