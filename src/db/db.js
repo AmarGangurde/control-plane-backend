@@ -110,9 +110,9 @@ const initDb = async () => {
         price_per_hour = EXCLUDED.price_per_hour
     `;
     await client.query(upsertPlan, ['p-tiny', 'Tiny (Free)', '25m', '5m', '64Mi', '32Mi', 0]);
-    await client.query(upsertPlan, ['p-small', 'Small', '100m', '10m', '128Mi', '64Mi', 50]);
-    await client.query(upsertPlan, ['p-medium', 'Medium', '500m', '50m', '512Mi', '128Mi', 200]);
-    await client.query(upsertPlan, ['p-large', 'Large', '1000m', '100m', '1024Mi', '256Mi', 400]);
+    await client.query(upsertPlan, ['p-small', 'Small', '100m', '10m', '128Mi', '64Mi', 11]);
+    await client.query(upsertPlan, ['p-medium', 'Medium', '500m', '50m', '512Mi', '128Mi', 28]);
+    await client.query(upsertPlan, ['p-large', 'Large', '1000m', '100m', '1024Mi', '256Mi', 55]);
 
     await client.query('COMMIT');
     logger.info('✅ PostgreSQL schema initialized and plans seeded.');
