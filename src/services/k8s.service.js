@@ -32,7 +32,8 @@ class K8sService {
         kc.loadFromDefault();
         logger.info('ℹ️ Loaded KubeConfig from default system path');
       } catch (err) {
-        logger.error('❌ Critical: Failed to find any KubeConfig. K8s operations will fail.', err.message);
+        logger.error('Fatal: Kubernetes configuration not found');
+        process.exit(1);
       }
     }
 
@@ -114,6 +115,9 @@ class K8sService {
       resources: {
         requests: { cpu: cpuRequest, memory: memoryRequest },
         limits: { cpu: cpuLimit, memory }
+      },
+      securityContext: {
+        allowPrivilegeEscalation: false
       }
     };
 
@@ -127,6 +131,19 @@ class K8sService {
 
     if (args && Array.isArray(args)) {
       container.args = args;
+    }
+
+    const podSpec = {
+      containers: [container],
+      securityContext: {
+        runAsNonRoot: true
+      }
+    };
+
+    // Future RuntimeClass support (dormant until Kata nodes exist)
+    if (plan?.runtime === 'kata') {
+      podSpec.runtimeClassName = 'kata';
+      podSpec.nodeSelector = { runtime: 'kata' };
     }
 
     await this.apps.createNamespacedDeployment({
@@ -145,9 +162,7 @@ class K8sService {
           selector: { matchLabels: { app: 'app' } },
           template: {
             metadata: { labels: { app: 'app' } },
-            spec: {
-              containers: [container]
-            }
+            spec: podSpec
           }
         }
       }
@@ -167,6 +182,9 @@ class K8sService {
       resources: {
         requests: { cpu: cpuRequest, memory: memoryRequest },
         limits: { cpu: cpuLimit, memory }
+      },
+      securityContext: {
+        allowPrivilegeEscalation: false
       }
     };
 
@@ -185,7 +203,21 @@ class K8sService {
     // Read current deployment, modify, and replace (zero-downtime rolling update)
     const current = await this.apps.readNamespacedDeployment({ name: 'app', namespace });
 
-    current.spec.template.spec.containers = [container];
+    const podSpec = {
+      ...current.spec.template.spec,
+      containers: [container],
+      securityContext: {
+        runAsNonRoot: true
+      }
+    };
+
+    // Future RuntimeClass support (dormant until Kata nodes exist)
+    if (plan?.runtime === 'kata') {
+      podSpec.runtimeClassName = 'kata';
+      podSpec.nodeSelector = { runtime: 'kata' };
+    }
+
+    current.spec.template.spec = podSpec;
     current.spec.strategy = {
       type: 'RollingUpdate',
       rollingUpdate: {

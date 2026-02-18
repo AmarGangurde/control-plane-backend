@@ -1,7 +1,9 @@
+const timestamp = () => new Date().toISOString();
+
 const logger = {
-	info: (...args) => console.log('[info]', ...args),
-	warn: (...args) => console.warn('[warn]', ...args),
-	error: (...args) => console.error('[error]', ...args)
+	info: (...args) => console.log(timestamp(), '[info]', ...args),
+	warn: (...args) => console.warn(timestamp(), '[warn]', ...args),
+	error: (...args) => console.error(timestamp(), '[error]', ...args)
 };
 
 export default logger;

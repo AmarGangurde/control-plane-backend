@@ -32,7 +32,7 @@ export const getAppById = async (id) => {
 
 export const listAppsByUserId = async (userId) => {
   const { rows } = await db.query(
-    'SELECT * FROM apps WHERE user_id = $1 ORDER BY created_at DESC',
+    "SELECT * FROM apps WHERE user_id = $1 AND status != 'deleted' ORDER BY created_at DESC",
     [userId]
   );
   return rows.map(parseApp);

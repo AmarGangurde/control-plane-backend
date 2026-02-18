@@ -31,3 +31,13 @@ export const rateLimiter = (req, res, next) => {
   bucket.count++;
   next();
 };
+
+// Memory protection: clean up stale IP buckets every 5 minutes
+setInterval(() => {
+  const now = Date.now();
+  for (const [ip, bucket] of buckets.entries()) {
+    if (now - bucket.windowStart > WINDOW_MS * 2) {
+      buckets.delete(ip);
+    }
+  }
+}, 300000);

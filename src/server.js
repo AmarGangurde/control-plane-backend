@@ -22,3 +22,17 @@ start().catch(err => {
   logger.error('❌ Failed to start server:', err);
   process.exit(1);
 });
+
+// Graceful shutdown
+const shutdown = async () => {
+  logger.info('Graceful shutdown initiated');
+  try {
+    await db.pool.end();
+  } catch (e) {
+    logger.error('Error during shutdown:', e);
+  }
+  process.exit(0);
+};
+
+process.on('SIGTERM', shutdown);
+process.on('SIGINT', shutdown);

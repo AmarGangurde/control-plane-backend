@@ -1,3 +1,8 @@
+if (!process.env.ADMIN_API_KEY) {
+  console.error("FATAL: ADMIN_API_KEY is not configured");
+  process.exit(1);
+}
+
 export const requireAdminKey = (req, res, next) => {
 
   const header = req.headers.authorization;

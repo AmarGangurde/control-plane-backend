@@ -1,11 +1,16 @@
 import pg from 'pg';
 import logger from '../utils/logger.js';
 
+if (!process.env.DATABASE_URL) {
+  console.error('FATAL: DATABASE_URL environment variable is not set');
+  process.exit(1);
+}
+
 const { Pool } = pg;
 
 // --- Connection Pool ---
 const pool = new Pool({
-  connectionString: process.env.DATABASE_URL || 'postgresql://wrexer:wrexer_secret@localhost:5432/wrexer',
+  connectionString: process.env.DATABASE_URL,
   max: 20,
   idleTimeoutMillis: 30000,
   connectionTimeoutMillis: 5000,
@@ -54,7 +59,8 @@ const initDb = async () => {
         cpu_request TEXT,
         memory TEXT,
         memory_request TEXT,
-        price_per_hour INTEGER
+        price_per_hour INTEGER,
+        runtime TEXT DEFAULT 'runc'
       )
     `);
 
@@ -115,6 +121,18 @@ const initDb = async () => {
     await client.query(upsertPlan, ['p-medium', 'Medium', '500m', '50m', '512Mi', '77Mi', 35]);
     await client.query(upsertPlan, ['p-large', 'Large', '1000m', '100m', '1024Mi', '154Mi', 69]);
     await client.query(upsertPlan, ['p-xlarge', 'XLarge', '2000m', '200m', '2048Mi', '307Mi', 139]);
+
+    // Future Kata Containers plan (dormant — not exposed in frontend)
+    await client.query(upsertPlan, ['p-kata-medium', 'Kata Medium (Secure VM Isolation)', '500m', '50m', '512Mi', '77Mi', 49]);
+    await client.query(`UPDATE plans SET runtime = 'kata' WHERE id = 'p-kata-medium'`);
+
+    // Add runtime column if missing (safe for existing DBs)
+    await client.query(`
+      DO $$ BEGIN
+        ALTER TABLE plans ADD COLUMN IF NOT EXISTS runtime TEXT DEFAULT 'runc';
+      EXCEPTION WHEN duplicate_column THEN NULL;
+      END $$;
+    `);
 
     // Sync existing apps to new pricing
     await client.query(`

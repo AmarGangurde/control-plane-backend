@@ -1,5 +1,6 @@
 import express from 'express';
 import cors from 'cors';
+import logger from './utils/logger.js';
 import cookieParser from 'cookie-parser';
 import authRoutes from './routes/auth.routes.js';
 import { listApiKeys } from './controllers/keys.controller.js';
@@ -22,7 +23,8 @@ import { frontendUrl } from './config/env.js';
 const app = express();
 
 // --- Middleware ---
-app.use(express.json());
+app.set('trust proxy', 1);
+app.use(express.json({ limit: '1mb' }));
 app.use(cookieParser());
 
 const allowedOrigins = [
@@ -76,5 +78,18 @@ api.get('/admin/keys', requireAdminKey, listApiKeys);
 
 // Mount everything under /api
 app.use('/api', api);
+
+// Global error handler — prevents unhandled errors from crashing the process
+app.use((err, req, res, next) => {
+  logger.error('Unhandled error', err);
+
+  if (res.headersSent) return next(err);
+
+  res.status(err.status || 500).json({
+    error: process.env.NODE_ENV === 'production'
+      ? 'Internal server error'
+      : err.message
+  });
+});
 
 export default app;

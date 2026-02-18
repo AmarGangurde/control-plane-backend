@@ -1,5 +1,5 @@
 import k8sService from './k8s.service.js';
-import { deleteAppById } from '../models/app.model.js';
+import db from '../db/db.js';
 import { stopPodBilling } from './billing.service.js';
 import logger from '../utils/logger.js';
 
@@ -19,6 +19,10 @@ export const killAppCompletely = async (app) => {
         logger.error('error deleting namespace in killAppCompletely', err?.message || err);
     }
 
-    await deleteAppById(app.id);
+    // Soft-delete for audit safety
+    await db.query(
+        "UPDATE apps SET status = 'deleted' WHERE id = $1",
+        [app.id]
+    );
     return true;
 };
