@@ -109,10 +109,12 @@ const initDb = async () => {
         memory_request = EXCLUDED.memory_request,
         price_per_hour = EXCLUDED.price_per_hour
     `;
-    await client.query(upsertPlan, ['p-tiny', 'Tiny (Free)', '25m', '5m', '64Mi', '32Mi', 0]);
-    await client.query(upsertPlan, ['p-small', 'Small', '100m', '10m', '128Mi', '64Mi', 11]);
-    await client.query(upsertPlan, ['p-medium', 'Medium', '500m', '50m', '512Mi', '128Mi', 28]);
-    await client.query(upsertPlan, ['p-large', 'Large', '1000m', '100m', '1024Mi', '256Mi', 55]);
+    await client.query(upsertPlan, ['p-tiny', 'Tiny (Free)', '25m', '3m', '64Mi', '10Mi', 0]);
+    await client.query(upsertPlan, ['p-small', 'Small', '100m', '10m', '128Mi', '20Mi', 14]);
+    await client.query(upsertPlan, ['p-basic', 'Basic', '250m', '25m', '256Mi', '38Mi', 25]);
+    await client.query(upsertPlan, ['p-medium', 'Medium', '500m', '50m', '512Mi', '77Mi', 35]);
+    await client.query(upsertPlan, ['p-large', 'Large', '1000m', '100m', '1024Mi', '154Mi', 69]);
+    await client.query(upsertPlan, ['p-xlarge', 'XLarge', '2000m', '200m', '2048Mi', '307Mi', 139]);
 
     // Sync existing apps to new pricing
     await client.query(`
