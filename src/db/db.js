@@ -121,17 +121,17 @@ const initDb = async () => {
     await client.query(upsertPlan, ['p-large', 'Large', '1000m', '100m', '1024Mi', '154Mi', 69]);
     await client.query(upsertPlan, ['p-xlarge', 'XLarge', '2000m', '200m', '2048Mi', '307Mi', 139]);
 
-    // Future Kata Containers plan (dormant — not exposed in frontend)
-    await client.query(upsertPlan, ['p-kata-medium', 'Kata Medium (Secure VM Isolation)', '500m', '50m', '512Mi', '77Mi', 49]);
-    await client.query(`UPDATE plans SET runtime = 'kata' WHERE id = 'p-kata-medium'`);
-
-    // Add runtime column if missing (safe for existing DBs)
+    // Add runtime column if missing (MUST run before any runtime references)
     await client.query(`
       DO $$ BEGIN
         ALTER TABLE plans ADD COLUMN IF NOT EXISTS runtime TEXT DEFAULT 'runc';
       EXCEPTION WHEN duplicate_column THEN NULL;
       END $$;
     `);
+
+    // Future Kata Containers plan (dormant — not exposed in frontend)
+    await client.query(upsertPlan, ['p-kata-medium', 'Kata Medium (Secure VM Isolation)', '500m', '50m', '512Mi', '77Mi', 49]);
+    await client.query(`UPDATE plans SET runtime = 'kata' WHERE id = 'p-kata-medium'`);
 
     // Sync existing apps to new pricing
     await client.query(`
