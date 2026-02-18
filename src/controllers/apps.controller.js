@@ -33,6 +33,11 @@ export const createApp = async (req, res) => {
       return res.status(400).json({ error: 'invalid plan' });
     }
 
+    // Guard: Block Kata plans until feature is enabled
+    if (plan.runtime === 'kata') {
+      return res.status(400).json({ error: 'Kata Container plans are coming soon and cannot be selected yet.' });
+    }
+
     // Tiny plan restriction: 1 per account
     if (plan.id === 'p-tiny') {
       const existingApps = await listAppsByUserId(user.id);
