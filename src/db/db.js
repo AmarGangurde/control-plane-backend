@@ -130,9 +130,9 @@ const initDb = async () => {
     `);
 
     // Kata Container plans (Coming Soon — visible but not selectable)
-    await client.query(upsertPlan, ['p-kata-small', 'Kata Small', '100m', '10m', '128Mi', '20Mi', 28]);
-    await client.query(upsertPlan, ['p-kata-medium', 'Kata Medium', '500m', '50m', '512Mi', '77Mi', 69]);
-    await client.query(upsertPlan, ['p-kata-large', 'Kata Large', '1000m', '100m', '1024Mi', '154Mi', 139]);
+    await client.query(upsertPlan, ['p-kata-small', 'Kata Small', '100m', '20m', '128Mi', '32Mi', 28]);
+    await client.query(upsertPlan, ['p-kata-medium', 'Kata Medium', '500m', '100m', '512Mi', '128Mi', 69]);
+    await client.query(upsertPlan, ['p-kata-large', 'Kata Large', '1000m', '200m', '1024Mi', '256Mi', 139]);
     await client.query(`UPDATE plans SET runtime = 'kata' WHERE id IN ('p-kata-small', 'p-kata-medium', 'p-kata-large')`);
 
     // Sync existing apps to new pricing
