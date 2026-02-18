@@ -119,7 +119,7 @@ export const stopPodBilling = async (podId) => {
  */
 export const runBillingLoop = async () => {
     const now = Math.floor(Date.now() / 1000);
-    const { rows: apps } = await db.query("SELECT id FROM apps WHERE status = 'running' FOR UPDATE SKIP LOCKED");
+    const { rows: apps } = await db.query("SELECT id FROM apps WHERE status = 'running'");
 
     for (const app of apps) {
         try {

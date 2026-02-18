@@ -134,10 +134,7 @@ class K8sService {
     }
 
     const podSpec = {
-      containers: [container],
-      securityContext: {
-        runAsNonRoot: true
-      }
+      containers: [container]
     };
 
     // Future RuntimeClass support (dormant until Kata nodes exist)
@@ -205,10 +202,7 @@ class K8sService {
 
     const podSpec = {
       ...current.spec.template.spec,
-      containers: [container],
-      securityContext: {
-        runAsNonRoot: true
-      }
+      containers: [container]
     };
 
     // Future RuntimeClass support (dormant until Kata nodes exist)

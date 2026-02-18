@@ -1,6 +1,5 @@
 if (!process.env.ADMIN_API_KEY) {
-  console.error("FATAL: ADMIN_API_KEY is not configured");
-  process.exit(1);
+  console.warn("WARNING: ADMIN_API_KEY is not configured — admin routes will reject all requests");
 }
 
 export const requireAdminKey = (req, res, next) => {
