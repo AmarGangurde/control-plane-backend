@@ -32,8 +32,7 @@ class K8sService {
         kc.loadFromDefault();
         logger.info('ℹ️ Loaded KubeConfig from default system path');
       } catch (err) {
-        logger.error('Fatal: Kubernetes configuration not found');
-        process.exit(1);
+        logger.error('❌ Critical: Failed to find any KubeConfig. K8s operations will fail.', err.message);
       }
     }
 

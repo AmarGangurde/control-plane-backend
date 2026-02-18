@@ -2,15 +2,14 @@ import pg from 'pg';
 import logger from '../utils/logger.js';
 
 if (!process.env.DATABASE_URL) {
-  console.error('FATAL: DATABASE_URL environment variable is not set');
-  process.exit(1);
+  console.warn('WARNING: DATABASE_URL not set, using default local connection string');
 }
 
 const { Pool } = pg;
 
 // --- Connection Pool ---
 const pool = new Pool({
-  connectionString: process.env.DATABASE_URL,
+  connectionString: process.env.DATABASE_URL || 'postgresql://wrexer:wrexer_secret@localhost:5432/wrexer',
   max: 20,
   idleTimeoutMillis: 30000,
   connectionTimeoutMillis: 5000,
