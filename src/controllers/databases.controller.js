@@ -89,15 +89,16 @@ export const createDatabase = async (req, res) => {
             await k8sService.createNamespace(namespace);
             await k8sService.createPVC({ namespace, size: plan.storage });
             await k8sService.createDatabaseDeployment({ namespace, plan, dbUser, dbPassword: dbPass, dbName });
-            const svc = await k8sService.createDatabaseService({ namespace });
+            await k8sService.createDatabaseService({ namespace });
 
-            const nodePort = svc.spec.ports[0].nodePort;
-            const publicUrl = `postgres://${dbUser}:${dbPass}@${baseDomain}:${nodePort}/${dbName}`;
+            const internalHost = `database.${namespace}.svc.cluster.local`;
+            const internalPort = 5432;
+            const internalUrl = `postgres://${dbUser}:${dbPass}@${internalHost}:${internalPort}/${dbName}`;
 
             await updateAppDetails(appId, {
-                db_host: baseDomain,
-                db_port: nodePort,
-                url: publicUrl,
+                db_host: internalHost,
+                db_port: internalPort,
+                url: internalUrl,
                 status: 'running'
             });
 

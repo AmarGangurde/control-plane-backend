@@ -237,13 +237,13 @@ class K8sService {
   }
 
   async createDatabaseService({ namespace }) {
-    // Use NodePort for public TCP access
+    // Use ClusterIP for internal access only
     const res = await this.core.createNamespacedService({
       namespace,
       body: {
         metadata: { name: 'database' },
         spec: {
-          type: 'NodePort',
+          type: 'ClusterIP',
           selector: { app: 'database' },
           ports: [{
             port: 5432,
