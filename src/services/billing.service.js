@@ -214,24 +214,41 @@ export const runBillingLoop = async () => {
                 // 7. Proactive Re-reservation
                 if (currentApp.status === 'running') {
                     // Standard Logic for Running Pods (App or DB)
-                    // Keep ~1 hour of runway
-                    const tenMinsCost = Math.ceil(effectiveHourlyRate / 6);
-                    if (currentReserved < tenMinsCost) {
-                        const topupAmount = Math.max(tenMinsCost, effectiveHourlyRate);
+                    // Keep ~1 hour of runway for compute
+                    const computeTarget = Math.ceil((currentApp.hourly_rate || 0)); // 1 hour buffer for compute
+
+                    // IF it's a database, we ALSO need to secure 10-days of storage upfront
+                    // This ensures if wallet drains, the storage funds are already safe
+                    let storageTarget = 0;
+                    if (currentApp.type === 'database') {
+                        storageTarget = (currentApp.storage_hourly_rate || 0) * 24 * 10; // 10 days storage
+                    }
+
+                    const totalTarget = computeTarget + storageTarget;
+
+                    if (currentReserved < totalTarget) {
+                        const amountNeeded = totalTarget - currentReserved;
+
                         const { rows: userRows } = await client.query(
                             'SELECT balance FROM users WHERE id = $1',
                             [currentApp.user_id]
                         );
                         const user = userRows[0];
 
-                        if (user && user.balance >= topupAmount) {
+                        // Take what we can, up to the target
+                        const amountToTake = Math.min(amountNeeded, user.balance);
+
+                        if (amountToTake > 0) {
                             await client.query(
                                 'UPDATE users SET balance = balance - $1, reserved_balance = reserved_balance + $2 WHERE id = $3',
-                                [topupAmount, topupAmount, currentApp.user_id]
+                                [amountToTake, amountToTake, currentApp.user_id]
                             );
-                            currentReserved += topupAmount;
-                            logger.info(`Auto-reserved for app ${currentApp.id} (+${topupAmount} paise)`);
+                            currentReserved += amountToTake;
+                            logger.info(`Auto-reserved for ${currentApp.type} ${currentApp.id} (+${amountToTake} paise) [Target: ${totalTarget}]`);
                         } else if (currentReserved <= 0) {
+                            // Only kill if we have absolutely 0 reserve left (not even enough for storage)
+                            // Ideally we should distinguish between compute exhaustion and storage exhaustion
+                            // But for now, 0 reserve means 0 functionality
                             shouldKill = true;
                         }
                     }
