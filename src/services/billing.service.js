@@ -123,7 +123,14 @@ export const stopPodBilling = async (podId) => {
  */
 export const runBillingLoop = async () => {
     const now = Math.floor(Date.now() / 1000);
-    const { rows: apps } = await db.query("SELECT id FROM apps WHERE status = 'running'");
+    // Select everything that needs billing: 
+    // 1. Any 'running' pod (App or Database)
+    // 2. Any 'database' that exists (not deleted) for storage billing
+    const { rows: apps } = await db.query(`
+        SELECT id FROM apps 
+        WHERE status = 'running' 
+        OR (type = 'database' AND status != 'deleted')
+    `);
 
     for (const app of apps) {
         try {
@@ -135,11 +142,13 @@ export const runBillingLoop = async () => {
 
                 // 1. RE-FETCH inside transaction to avoid race conditions
                 const { rows } = await client.query(
-                    "SELECT * FROM apps WHERE id = $1 AND status = 'running' FOR UPDATE",
+                    "SELECT * FROM apps WHERE id = $1 FOR UPDATE",
                     [app.id]
                 );
                 const currentApp = rows[0];
-                if (!currentApp) {
+
+                // Skip if deleted or if it somehow doesn't match the billing criteria anymore
+                if (!currentApp || currentApp.status === 'deleted') {
                     await client.query('COMMIT');
                     continue;
                 }
@@ -150,16 +159,24 @@ export const runBillingLoop = async () => {
                     continue;
                 }
 
-                // 2. Handle Free Apps (0 rate)
-                if (currentApp.hourly_rate <= 0) {
+                // 2. Calculate Effective Hourly Rate
+                // Pod rate is only active if 'running'
+                const podRate = currentApp.status === 'running' ? (currentApp.hourly_rate || 0) : 0;
+                // Storage rate is active for all non-deleted databases
+                const storageRate = currentApp.type === 'database' ? (currentApp.storage_hourly_rate || 0) : 0;
+
+                const effectiveHourlyRate = podRate + storageRate;
+
+                // 3. Handle Free/No-cost resources
+                if (effectiveHourlyRate <= 0) {
                     await client.query('UPDATE apps SET last_billed_at = $1 WHERE id = $2', [now, currentApp.id]);
                     await client.query('COMMIT');
                     continue;
                 }
 
-                const costFloat = (currentApp.hourly_rate * elapsedSeconds) / 3600;
+                const costFloat = (effectiveHourlyRate * elapsedSeconds) / 3600;
 
-                // 3. Only charge if we have accumulated at least 1 Paise of cost
+                // 4. Only charge if we have accumulated at least 1 Paise of cost
                 if (costFloat < 1) {
                     await client.query('COMMIT');
                     continue;
@@ -167,13 +184,13 @@ export const runBillingLoop = async () => {
 
                 const cost = Math.floor(costFloat);
 
-                // 4. PRECISION FIX
-                const secondsCharged = Math.floor((cost * 3600) / currentApp.hourly_rate);
+                // 5. PRECISION FIX: Only advance time for the exact amount we charged
+                const secondsCharged = Math.floor((cost * 3600) / effectiveHourlyRate);
                 const actualLastBilledAt = Number(currentApp.last_billed_at) + secondsCharged;
 
                 let currentReserved = currentApp.reserved_amount;
 
-                // 5. Deduct the cost from the reserve
+                // 6. Deduct the cost from the reserve and/or main balance
                 if (cost > 0) {
                     const reserveDeduction = Math.min(cost, currentApp.reserved_amount);
                     const overflow = cost - reserveDeduction;
@@ -194,29 +211,40 @@ export const runBillingLoop = async () => {
                     }
                 }
 
-                // 6. Proactive Re-reservation
-                const tenMinsCost = Math.ceil(currentApp.hourly_rate / 6);
-                if (currentReserved < tenMinsCost) {
-                    const topupAmount = Math.max(tenMinsCost, currentApp.hourly_rate);
-                    const { rows: userRows } = await client.query(
-                        'SELECT balance FROM users WHERE id = $1',
-                        [currentApp.user_id]
-                    );
-                    const user = userRows[0];
-
-                    if (user && user.balance >= topupAmount) {
-                        await client.query(
-                            'UPDATE users SET balance = balance - $1, reserved_balance = reserved_balance + $2 WHERE id = $3',
-                            [topupAmount, topupAmount, currentApp.user_id]
+                // 7. Proactive Re-reservation (Only if pod is running)
+                // If it's just storage billing for a stopped DB, we don't necessarily need a big reserve
+                if (currentApp.status === 'running') {
+                    const tenMinsCost = Math.ceil(effectiveHourlyRate / 6);
+                    if (currentReserved < tenMinsCost) {
+                        const topupAmount = Math.max(tenMinsCost, effectiveHourlyRate);
+                        const { rows: userRows } = await client.query(
+                            'SELECT balance FROM users WHERE id = $1',
+                            [currentApp.user_id]
                         );
-                        currentReserved += topupAmount;
-                        logger.info(`Auto-reserved for app ${currentApp.id} (+${topupAmount} paise)`);
-                    } else if (currentReserved <= 0) {
-                        shouldKill = true;
+                        const user = userRows[0];
+
+                        if (user && user.balance >= topupAmount) {
+                            await client.query(
+                                'UPDATE users SET balance = balance - $1, reserved_balance = reserved_balance + $2 WHERE id = $3',
+                                [topupAmount, topupAmount, currentApp.user_id]
+                            );
+                            currentReserved += topupAmount;
+                            logger.info(`Auto-reserved for app ${currentApp.id} (+${topupAmount} paise)`);
+                        } else if (currentReserved <= 0) {
+                            shouldKill = true;
+                        }
+                    }
+                } else if (currentApp.type === 'database') {
+                    // For stopped databases, if they run out of balance, we might want to warn or stop them
+                    const { rows: userRows } = await client.query('SELECT balance FROM users WHERE id = $1', [currentApp.user_id]);
+                    const user = userRows[0];
+                    if (!user || user.balance <= 0) {
+                        // For now we just log a warning. Production might suspend storage.
+                        logger.warn(`User ${currentApp.user_id} has zero balance for storage of DB ${currentApp.id}`);
                     }
                 }
 
-                // 7. Update app billing state
+                // 8. Update app billing state
                 await client.query(`
                     UPDATE apps SET 
                         reserved_amount = $1,

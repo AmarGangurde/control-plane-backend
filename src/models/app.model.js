@@ -4,7 +4,7 @@ export const insertApp = async (data) => {
   const {
     id, name, namespace, image, url, userId, planId,
     containerPort, env, command, args,
-    type = 'app', storage = null,
+    type = 'app', storage = null, storage_hourly_rate = 0,
     db_host = null, db_port = null, db_user = null, db_password = null, db_name = null
   } = data;
 
@@ -15,14 +15,14 @@ export const insertApp = async (data) => {
   await db.query(`
     INSERT INTO apps (
       id, name, namespace, image, url, user_id, plan_id, 
-      container_port, env, command, args, type, storage,
+      container_port, env, command, args, type, storage, storage_hourly_rate,
       db_host, db_port, db_user, db_password, db_name,
       last_charged_at
     )
-    VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, NOW())
+    VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19, NOW())
   `, [
     id, name, namespace, image, url, userId, planId,
-    containerPort, envStr, cmdStr, argStr, type, storage,
+    containerPort, envStr, cmdStr, argStr, type, storage, storage_hourly_rate,
     db_host, db_port, db_user, db_password, db_name
   ]);
 };

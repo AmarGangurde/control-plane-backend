@@ -81,6 +81,7 @@ const initDb = async () => {
         command TEXT,
         args TEXT,
         hourly_rate INTEGER DEFAULT 0,
+        storage_hourly_rate INTEGER DEFAULT 0,
         status TEXT DEFAULT 'stopped',
         started_at BIGINT DEFAULT 0,
         last_billed_at BIGINT DEFAULT 0,
@@ -109,6 +110,7 @@ const initDb = async () => {
         ALTER TABLE apps ADD COLUMN IF NOT EXISTS db_user TEXT;
         ALTER TABLE apps ADD COLUMN IF NOT EXISTS db_password TEXT;
         ALTER TABLE apps ADD COLUMN IF NOT EXISTS db_name TEXT;
+        ALTER TABLE apps ADD COLUMN IF NOT EXISTS storage_hourly_rate INTEGER DEFAULT 0;
       EXCEPTION WHEN duplicate_column THEN NULL;
       END $$;
     `);
@@ -133,10 +135,13 @@ const initDb = async () => {
     await client.query(upsertPlan, ['p-large', 'Large', '1000m', '100m', '1024Mi', '154Mi', 69, null]);
     await client.query(upsertPlan, ['p-xlarge', 'XLarge', '2000m', '200m', '2048Mi', '307Mi', 139, null]);
 
-    // Managed Database Plans
-    await client.query(upsertPlan, ['db-small', 'DB Small', '250m', '50m', '256Mi', '128Mi', 150, '1Gi']);
-    await client.query(upsertPlan, ['db-medium', 'DB Medium', '500m', '100m', '512Mi', '256Mi', 300, '5Gi']);
-    await client.query(upsertPlan, ['db-large', 'DB Large', '1000m', '200m', '1024Mi', '512Mi', 600, '10Gi']);
+    // Managed Database Plans (Pod price = App Plan * 1.3, Storage = 2 paise/GB)
+    // db-small: (25*1.3) = 32 + (1*2) = 2 -> 34 total (split: 32 pod, 2 storage)
+    await client.query(upsertPlan, ['db-small', 'DB Small', '250m', '50m', '256Mi', '128Mi', 32, '1Gi']);
+    // db-medium: (35*1.3) = 45 + (5*2) = 10 -> 55 total (split: 45 pod, 10 storage)
+    await client.query(upsertPlan, ['db-medium', 'DB Medium', '500m', '100m', '512Mi', '256Mi', 45, '5Gi']);
+    // db-large: (1000*1.3) = 89 + (10*2) = 20 -> 109 total (split: 89 pod, 20 storage)
+    await client.query(upsertPlan, ['db-large', 'DB Large', '1000m', '200m', '1024Mi', '512Mi', 89, '10Gi']);
 
     // Add runtime column if missing 
     await client.query(`
@@ -155,10 +160,13 @@ const initDb = async () => {
     // Sync existing apps to new pricing
     await client.query(`
       UPDATE apps
-      SET hourly_rate = plans.price_per_hour
+      SET hourly_rate = plans.price_per_hour,
+          storage_hourly_rate = CASE 
+            WHEN apps.type = 'database' THEN CAST(REPLACE(plans.storage, 'Gi', '') AS INTEGER) * 2 
+            ELSE 0 
+          END
       FROM plans
       WHERE apps.plan_id = plans.id
-      AND apps.hourly_rate != plans.price_per_hour
     `);
 
     await client.query('COMMIT');

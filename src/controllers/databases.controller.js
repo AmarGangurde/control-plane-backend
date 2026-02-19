@@ -60,6 +60,10 @@ export const createDatabase = async (req, res) => {
         const dbPass = genPass();
         const dbName = genDb();
 
+        const storageGB = parseInt(plan.storage.replace('Gi', '')) || 0;
+        const storageRate = storageGB * 2; // 2 paise per GB per hour
+        const combinedRate = plan.price_per_hour + storageRate;
+
         // 1. Insert DB record
         await insertApp({
             id: appId,
@@ -71,16 +75,17 @@ export const createDatabase = async (req, res) => {
             planId: plan.id,
             type: 'database',
             storage: plan.storage,
+            storage_hourly_rate: storageRate,
             db_user: dbUser,
             db_password: dbPass,
             db_name: dbName,
             status: 'provisioning'
         });
 
-        // 2. Start Billing
-        if (plan.price_per_hour > 0) {
+        // 2. Start Billing (Pod + Storage combined for the 1-hour reserve)
+        if (combinedRate > 0) {
             try {
-                await startPodBilling(appId, user.id, plan.price_per_hour);
+                await startPodBilling(appId, user.id, combinedRate);
             } catch (e) {
                 await db.query("UPDATE apps SET status = 'deleted' WHERE id = $1", [appId]);
                 return res.status(402).json({ error: e.message });
@@ -159,7 +164,9 @@ export const startDatabase = async (req, res) => {
     if (!app || app.user_id !== req.user.id) return res.status(404).json({ error: 'DB not found' });
 
     const plan = await getPlanById(app.plan_id);
-    if (plan.price_per_hour > 0 && req.user.balance < plan.price_per_hour) {
+    const combinedRate = plan.price_per_hour + (app.storage_hourly_rate || 0);
+
+    if (combinedRate > 0 && req.user.balance < combinedRate) {
         return res.status(402).json({ error: 'Insufficient balance' });
     }
 
@@ -171,8 +178,8 @@ export const startDatabase = async (req, res) => {
         dbName: app.db_name
     });
 
-    if (plan.price_per_hour > 0) {
-        await startPodBilling(app.id, req.user.id, plan.price_per_hour);
+    if (combinedRate > 0) {
+        await startPodBilling(app.id, req.user.id, combinedRate);
     }
 
     await updateAppDetails(app.id, { status: 'running' });
