@@ -486,9 +486,9 @@ class K8sService {
         containerName,
         commandArray,
         stream,
-        null, // stderr (if we pipe it to stream, it corrupts the sql file)
-        process.stdin, // stdin
-        true, // tty
+        process.stderr, // log stderr to server console for debugging
+        null, // no stdin
+        false, // tty must be false for clean binary/text output
         (status) => {
           if (status.status === 'Success') resolve();
           else reject(new Error(status.message));
