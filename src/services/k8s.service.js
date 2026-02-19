@@ -165,6 +165,105 @@ class K8sService {
     });
   }
 
+  async createPVC({ namespace, name = 'pg-data', size = '1Gi' }) {
+    await this.core.createNamespacedPersistentVolumeClaim({
+      namespace,
+      body: {
+        metadata: { name },
+        spec: {
+          accessModes: ['ReadWriteOnce'],
+          resources: {
+            requests: { storage: size }
+          }
+        }
+      }
+    });
+  }
+
+  async createDatabaseDeployment({ namespace, plan, dbUser, dbPassword, dbName }) {
+    const cpuLimit = plan?.cpu || '250m';
+    const memoryLimit = plan?.memory || '256Mi';
+
+    // PostgreSQL usually needs a bit more than nothing to start
+    const cpuRequest = plan?.cpu_request || '50m';
+    const memoryRequest = plan?.memory_request || '128Mi';
+
+    const podSpec = {
+      containers: [{
+        name: 'database',
+        image: 'postgres:16-alpine',
+        ports: [{ containerPort: 5432 }],
+        env: [
+          { name: 'POSTGRES_USER', value: dbUser },
+          { name: 'POSTGRES_PASSWORD', value: dbPassword },
+          { name: 'POSTGRES_DB', value: dbName },
+          { name: 'PGDATA', value: '/var/lib/postgresql/data/pgdata' }
+        ],
+        resources: {
+          requests: { cpu: cpuRequest, memory: memoryRequest },
+          limits: { cpu: cpuLimit, memory: memoryLimit }
+        },
+        volumeMounts: [{
+          name: 'data',
+          mountPath: '/var/lib/postgresql/data',
+          subPath: 'pgdata'
+        }],
+        livenessProbe: {
+          exec: { command: ['pg_isready', '-U', dbUser, '-d', dbName] },
+          initialDelaySeconds: 30,
+          periodSeconds: 10
+        }
+      }],
+      volumes: [{
+        name: 'data',
+        persistentVolumeClaim: { claimName: 'pg-data' }
+      }]
+    };
+
+    await this.apps.createNamespacedDeployment({
+      namespace,
+      body: {
+        metadata: { name: 'database' },
+        spec: {
+          replicas: 1,
+          selector: { matchLabels: { app: 'database' } },
+          template: {
+            metadata: { labels: { app: 'database' } },
+            spec: podSpec
+          }
+        }
+      }
+    });
+  }
+
+  async createDatabaseService({ namespace }) {
+    // Use NodePort for public TCP access
+    const res = await this.core.createNamespacedService({
+      namespace,
+      body: {
+        metadata: { name: 'database' },
+        spec: {
+          type: 'NodePort',
+          selector: { app: 'database' },
+          ports: [{
+            port: 5432,
+            targetPort: 5432,
+            protocol: 'TCP'
+          }]
+        }
+      }
+    });
+    return res.body;
+  }
+
+  async deleteNamespacedDeployment(name, namespace) {
+    try {
+      await this.apps.deleteNamespacedDeployment({ name, namespace });
+    } catch (err) {
+      if (err.body?.code !== 404) throw err;
+    }
+  }
+
   async updateDeployment({ namespace, image, containerPort, plan, env, command, args }) {
     const cpuRequest = plan?.cpu_request || '10m';
     const cpuLimit = plan?.cpu || '100m';

@@ -15,6 +15,14 @@ import {
   processMockSuccess,
   cancelPayment
 } from './controllers/billing.controller.js';
+import {
+  createDatabase,
+  listDatabases,
+  getDatabase,
+  stopDatabase,
+  startDatabase,
+  destroyDatabase
+} from './controllers/databases.controller.js';
 import { requireAuth } from './middleware/auth.js';
 import { requireAdminKey } from './middleware/adminAuth.js';
 import { rateLimiter } from './middleware/rateLimit.js';
@@ -73,48 +81,15 @@ api.get('/billing/balance', requireAuth, getBalance);
 api.post('/billing/initiate-payment', requireAuth, initiatePayment);
 api.get('/billing/transactions', requireAuth, getTransactions);
 
-// Database proxy routes (forward to userrds microservice)
-const USERRDS_URL = process.env.USERRDS_URL || 'http://localhost:4002';
-const USERRDS_KEY = process.env.ADMIN_API_KEY;
+api.get('/billing/transactions', requireAuth, getTransactions);
 
-const userrdsProxy = async (method, path, body = null) => {
-  const opts = {
-    method,
-    headers: { 'Content-Type': 'application/json', 'x-api-key': USERRDS_KEY },
-  };
-  if (body) opts.body = JSON.stringify(body);
-  const res = await fetch(`${USERRDS_URL}${path}`, opts);
-  const data = await res.json();
-  if (!res.ok) throw { status: res.status, message: data.error || 'userrds error' };
-  return data;
-};
-
-api.post('/databases', requireAuth, async (req, res) => {
-  try {
-    const data = await userrdsProxy('POST', '/databases', { name: req.body.name, userId: req.user.id });
-    res.status(201).json(data);
-  } catch (e) {
-    res.status(e.status || 500).json({ error: e.message });
-  }
-});
-
-api.get('/databases', requireAuth, async (req, res) => {
-  try {
-    const data = await userrdsProxy('GET', '/databases');
-    res.json(data);
-  } catch (e) {
-    res.status(e.status || 500).json({ error: e.message });
-  }
-});
-
-api.delete('/databases/:id', requireAuth, async (req, res) => {
-  try {
-    const data = await userrdsProxy('DELETE', `/databases/${req.params.id}`);
-    res.json(data);
-  } catch (e) {
-    res.status(e.status || 500).json({ error: e.message });
-  }
-});
+// Database routes (Physical PostgreSQL Pods)
+api.post('/databases', requireAuth, createDatabase);
+api.get('/databases', requireAuth, listDatabases);
+api.get('/databases/:id', requireAuth, getDatabase);
+api.post('/databases/:id/stop', requireAuth, stopDatabase);
+api.post('/databases/:id/start', requireAuth, startDatabase);
+api.delete('/databases/:id', requireAuth, destroyDatabase);
 
 // Admin routes
 api.get('/admin/keys', requireAdminKey, listApiKeys);
