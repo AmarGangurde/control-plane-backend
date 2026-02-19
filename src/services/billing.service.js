@@ -26,10 +26,14 @@ export const startPodBilling = async (podId, userId, hourlyRatePaise) => {
             [hourlyRatePaise, hourlyRatePaise, userId]
         );
 
+        // Fetch app details for logging
+        const { rows: appRows } = await client.query('SELECT name, type FROM apps WHERE id = $1', [podId]);
+        const app = appRows[0];
+
         // Log initial reservation in history
         await client.query(
-            'INSERT INTO transactions (id, user_id, amount, type, status) VALUES ($1, $2, $3, $4, $5)',
-            [uuidv4(), userId, -hourlyRatePaise, 'reservation', 'success']
+            'INSERT INTO transactions (id, user_id, amount, type, status, external_id, metadata) VALUES ($1, $2, $3, $4, $5, $6, $7)',
+            [uuidv4(), userId, -hourlyRatePaise, 'reservation', 'success', app?.name || 'Resource', JSON.stringify({ type: app?.type || 'app' })]
         );
 
         // Update app record
@@ -63,7 +67,7 @@ export const stopPodBilling = async (podId) => {
         await client.query('BEGIN');
 
         const { rows } = await client.query(
-            'SELECT user_id, reserved_amount, total_charged, name, started_at FROM apps WHERE id = $1',
+            'SELECT user_id, reserved_amount, total_charged, name, type, started_at FROM apps WHERE id = $1',
             [podId]
         );
         const app = rows[0];
@@ -81,8 +85,8 @@ export const stopPodBilling = async (podId) => {
 
             // Log refund in history
             await client.query(
-                'INSERT INTO transactions (id, user_id, amount, type, status, external_id) VALUES ($1, $2, $3, $4, $5, $6)',
-                [uuidv4(), app.user_id, app.reserved_amount, 'refund', 'success', `Refund: ${app.name}`]
+                'INSERT INTO transactions (id, user_id, amount, type, status, external_id, metadata) VALUES ($1, $2, $3, $4, $5, $6, $7)',
+                [uuidv4(), app.user_id, app.reserved_amount, 'refund', 'success', `Refund: ${app.name}`, JSON.stringify({ type: app.type })]
             );
         }
 
@@ -90,7 +94,7 @@ export const stopPodBilling = async (podId) => {
         if (app.total_charged > 0) {
             const now = Math.floor(Date.now() / 1000);
             const durationSeconds = now - app.started_at;
-            const metadata = JSON.stringify({ duration: durationSeconds });
+            const metadata = JSON.stringify({ duration: durationSeconds, type: app.type });
 
             await client.query(
                 'INSERT INTO transactions (id, user_id, amount, type, status, external_id, metadata) VALUES ($1, $2, $3, $4, $5, $6, $7)',

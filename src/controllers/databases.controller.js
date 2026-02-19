@@ -17,6 +17,9 @@ const genPass = () => crypto.randomBytes(16).toString('hex');
 const genUser = () => 'u_' + crypto.randomBytes(4).toString('hex');
 const genDb = () => 'db_' + crypto.randomBytes(4).toString('hex');
 
+// Mask sensitive password from connection strings
+const maskUrl = (url) => url ? url.replace(/:([^:@]+)(?=@)/, ':••••••••') : '';
+
 export const createDatabase = async (req, res) => {
     try {
         const { name, planId = 'db-small' } = req.body;
@@ -118,7 +121,12 @@ export const createDatabase = async (req, res) => {
 
 export const listDatabases = async (req, res) => {
     const dbs = await listAppsByUserId(req.user.id, 'database');
-    res.json(dbs);
+    const masked = dbs.map(db => ({
+        ...db,
+        url: maskUrl(db.url),
+        db_password: '••••••••'
+    }));
+    res.json(masked);
 };
 
 export const getDatabase = async (req, res) => {
@@ -127,7 +135,13 @@ export const getDatabase = async (req, res) => {
 
     const status = await k8sService.getAppStatus(db.namespace);
     const metrics = await k8sService.getPodMetrics(db.namespace);
-    res.json({ ...db, status, metrics });
+    res.json({
+        ...db,
+        url: maskUrl(db.url),
+        db_password: '••••••••',
+        status,
+        metrics
+    });
 };
 
 export const stopDatabase = async (req, res) => {
