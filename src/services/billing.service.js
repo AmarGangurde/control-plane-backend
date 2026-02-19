@@ -194,37 +194,86 @@ export const runBillingLoop = async () => {
                 if (cost > 0) {
                     const reserveDeduction = Math.min(cost, currentApp.reserved_amount);
                     const overflow = cost - reserveDeduction;
-                    currentReserved = Math.max(0, currentApp.reserved_amount - cost);
 
-                    if (reserveDeduction > 0) {
-                        await client.query(
-                            'UPDATE users SET reserved_balance = GREATEST(0, reserved_balance - $1) WHERE id = $2',
-                            [reserveDeduction, currentApp.user_id]
-                        );
+                    let userBalance = 0;
+                    if (overflow > 0) {
+                        const { rows: uRows } = await client.query('SELECT balance FROM users WHERE id = $1', [currentApp.user_id]);
+                        if (uRows.length > 0) userBalance = uRows[0].balance;
+
+                        if (userBalance < overflow) {
+                            // INSUFFICIENT FUNDS for the *past* interval
+                            // We cannot pay for the time already used.
+                            // Action: Do NOT update 'last_billed_at'. Let debt accumulate.
+
+                            if (currentApp.status === 'running') {
+                                logger.info(`Insufficient funds for running app ${currentApp.id}. Killing.`);
+                                shouldKill = true;
+                                // We must execute kill logic here or set flag? 
+                                // If we continue, we skip the `if (shouldKill)` at end of loop?
+                                // Yes because of `continue`.
+                                // But `shouldKill` is processed outside `try/finally`? 
+                                // No, `shouldKill` is processed AFTER `finally`, but INSIDE the `for` loop.
+                                // If we `continue`, we skip to next loop iteration immediately.
+                                // So we MUST kill here or ensure we reach the end.
+                                // BUT we don't want to update DB.
+
+                                // We'll just rely on the next loop iteration finding it 'stopped'? 
+                                // No, we need to stop it now.
+                                // Calling killAppCompletely needs to happen outside transaction ideally.
+                            } else {
+                                logger.warn(`Storage Grace Period (Debt): User ${currentApp.user_id} DB ${currentApp.id} skipped billing (Gap: ${elapsedSeconds}s).`);
+                            }
+
+                            // Commit empty transaction to release lock
+                            await client.query('COMMIT');
+
+                            // If we need to kill, do it now (async but fire-and-forget or awaited)
+                            if (shouldKill) {
+                                // We need to import killAppCompletely or it's available in scope?
+                                // It is likely available in scope (used at line 313).
+                                // We need the full app object. `currentApp` is from `FOR UPDATE` query. `app` is from outer loop.
+                                // `app` might be stale? `currentApp` is better.
+                                // But `killAppCompletely` expects a certain structure. 
+                                // Let's use `app` from outer loop which is just {id}.
+                                // `killAppCompletely` fetches the app internally?
+                                // Line 310: `const { rows } = await db.query(...)`
+                                // Yes. So we can just call the logic.
+
+                                // Actually, let's just copy the logic or call helper safely.
+                                // To avoid code duplication, I'll just set a simpler flag or logic?
+                                // No, `continue` forces me to handle it here.
+
+                                try {
+                                    // Release client before killing to avoid deadlock potential if kill uses DB?
+                                    // Client is released in finally. But we are inside try.
+                                    // We can just rely on the fact that we released lock with COMMIT.
+                                    const { rows: fullAppRows } = await db.query('SELECT * FROM apps WHERE id = $1', [currentApp.id]);
+                                    if (fullAppRows[0]) await killAppCompletely(fullAppRows[0]);
+                                } catch (kErr) {
+                                    logger.error('Error killing app during billing:', kErr);
+                                }
+                            }
+                            continue; // Skip the rest of the loop (including reservation and update)
+                        }
+
+                        // Deduct from balance
+                        await client.query('UPDATE users SET balance = balance - $1 WHERE id = $2', [overflow, currentApp.user_id]);
                     }
 
-                    if (overflow > 0) {
-                        await client.query(
-                            'UPDATE users SET balance = GREATEST(0, balance - $1) WHERE id = $2',
-                            [overflow, currentApp.user_id]
-                        );
+                    if (reserveDeduction > 0) {
+                        currentReserved -= reserveDeduction;
+                        await client.query('UPDATE users SET reserved_balance = reserved_balance - $1 WHERE id = $2', [reserveDeduction, currentApp.user_id]);
                     }
                 }
 
                 // 7. Proactive Re-reservation
-                if (currentApp.status === 'running') {
+                if (true) { // Unified Logic (Runs for all apps: Running or Stopped DBs)
                     // Standard Logic for Running Pods (App or DB)
                     // Keep ~1 hour of runway for compute
-                    const computeTarget = Math.ceil((currentApp.hourly_rate || 0)); // 1 hour buffer for compute
+                    const reserveTarget = Math.ceil(effectiveHourlyRate); // 1 hour buffer
 
-                    // IF it's a database, we ALSO need to secure 10-days of storage upfront
-                    // This ensures if wallet drains, the storage funds are already safe
-                    let storageTarget = 0;
-                    if (currentApp.type === 'database') {
-                        storageTarget = (currentApp.storage_hourly_rate || 0) * 24 * 10; // 10 days storage
-                    }
-
-                    const totalTarget = computeTarget + storageTarget;
+                    // Simplified: total target is just the 1 hour buffer
+                    const totalTarget = reserveTarget;
 
                     if (currentReserved < totalTarget) {
                         const amountNeeded = totalTarget - currentReserved;
@@ -246,13 +295,18 @@ export const runBillingLoop = async () => {
                             currentReserved += amountToTake;
                             logger.info(`Auto-reserved for ${currentApp.type} ${currentApp.id} (+${amountToTake} paise) [Target: ${totalTarget}]`);
                         } else if (currentReserved <= 0) {
-                            // Only kill if we have absolutely 0 reserve left (not even enough for storage)
-                            // Ideally we should distinguish between compute exhaustion and storage exhaustion
-                            // But for now, 0 reserve means 0 functionality
-                            shouldKill = true;
+                            // No reserve left
+                            if (currentApp.status === 'running') {
+                                // Compute resource: Kill it to stop the burn
+                                shouldKill = true;
+                            } else {
+                                // Storage resource (Stopped DB)
+                                // Log Grace Period Warning
+                                logger.warn(`Storage Grace Period: User ${currentApp.user_id} DB ${currentApp.id} has 0 reserve. PVC at risk.`);
+                            }
                         }
                     }
-                } else if (currentApp.type === 'database') {
+                } else if (false) { // Disabled
                     // Logic for Stopped Databases (Storage Only Billing)
                     // Goal: Maintain a 10-day safety net to prevent data loss
                     const dailyCost = (currentApp.storage_hourly_rate || 0) * 24;
