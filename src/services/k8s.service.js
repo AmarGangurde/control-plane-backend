@@ -14,6 +14,8 @@ class K8sService {
       '/app/data/k3s.yaml'
     ];
 
+    this.kc = kc;
+
     let loaded = false;
     for (const path of possiblePaths) {
       if (!path) continue;
