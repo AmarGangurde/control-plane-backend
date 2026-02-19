@@ -21,7 +21,8 @@ import {
   getDatabase,
   stopDatabase,
   startDatabase,
-  destroyDatabase
+  destroyDatabase,
+  downloadBackup
 } from './controllers/databases.controller.js';
 import { requireAuth } from './middleware/auth.js';
 import { requireAdminKey } from './middleware/adminAuth.js';
@@ -89,6 +90,7 @@ api.get('/databases', requireAuth, listDatabases);
 api.get('/databases/:id', requireAuth, getDatabase);
 api.post('/databases/:id/stop', requireAuth, stopDatabase);
 api.post('/databases/:id/start', requireAuth, startDatabase);
+api.get('/databases/:id/backup', requireAuth, downloadBackup);
 api.delete('/databases/:id', requireAuth, destroyDatabase);
 
 // Admin routes

@@ -186,6 +186,43 @@ export const startDatabase = async (req, res) => {
     res.json({ status: 'running' });
 };
 
+// Stream a pg_dump backup to the client
+export const downloadBackup = async (req, res) => {
+    const { id } = req.params;
+
+    try {
+        const { rows } = await db.query('SELECT * FROM apps WHERE id = $1 AND user_id = $2', [id, req.user.id]);
+        const app = rows[0];
+
+        if (!app) return res.status(404).json({ error: 'Database not found' });
+        if (app.type !== 'database') return res.status(400).json({ error: 'Not a database' });
+        if (app.status !== 'running') return res.status(400).json({ error: 'Database must be running to take a backup' });
+
+        // Get the running pod
+        const podName = await k8sService.getPodName(app.namespace);
+        if (!podName) return res.status(500).json({ error: 'Pod not found' });
+
+        // Set headers for download
+        const filename = `${app.name}_backup_${new Date().toISOString().split('T')[0]}.sql`;
+        res.setHeader('Content-Disposition', `attachment; filename="${filename}"`);
+        res.setHeader('Content-Type', 'application/sql');
+
+        // Construct pg_dump command
+        // PGPASSWORD is set via env var in the pod, but we can also pass it in the connection string
+        // safest is to use the localhost connection since we are exec-ing inside
+        const cmd = [
+            'pg_dump',
+            `postgresql://${app.db_user}:${app.db_password}@localhost:5432/${app.db_name}`
+        ];
+
+        await k8sService.execAndStream(app.namespace, podName, 'app', cmd, res);
+
+    } catch (err) {
+        logger.error('Backup download failed:', err);
+        if (!res.headersSent) res.status(500).json({ error: 'Backup failed' });
+    }
+};
+
 export const destroyDatabase = async (req, res) => {
     const app = await getAppById(req.params.id);
     if (!app || app.user_id !== req.user.id) return res.status(404).json({ error: 'DB not found' });

@@ -403,6 +403,12 @@ class K8sService {
     return 'unknown';
   }
 
+  async getPodName(namespace) {
+    const res = await this.core.listNamespacedPod({ namespace });
+    if (!res.items.length) return null;
+    return res.items[0].metadata.name;
+  }
+
   async getLogs(namespace) {
     try {
       const res = await this.core.listNamespacedPod({ namespace });
@@ -464,6 +470,31 @@ class K8sService {
 
       throw err;
     }
+  }
+
+  /**
+   * Executes a command in a running pod and streams stdout.
+   * Used for pg_dump backups.
+   */
+  async execAndStream(namespace, podName, containerName, commandArray, stream) {
+    const exec = new k8s.Exec(this.kc);
+
+    return new Promise((resolve, reject) => {
+      exec.exec(
+        namespace,
+        podName,
+        containerName,
+        commandArray,
+        stream,
+        null, // stderr (if we pipe it to stream, it corrupts the sql file)
+        process.stdin, // stdin
+        true, // tty
+        (status) => {
+          if (status.status === 'Success') resolve();
+          else reject(new Error(status.message));
+        }
+      ).catch(reject);
+    });
   }
 }
 
