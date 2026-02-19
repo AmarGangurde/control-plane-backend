@@ -60,7 +60,7 @@ export const deleteAppById = async (id) => {
 
 export const updateAppDetails = async (id, data) => {
   const {
-    image, containerPort, env, command, args,
+    image, containerPort, env, command, args, url,
     db_host, db_port, db_user, db_password, db_name, status
   } = data;
 
@@ -76,6 +76,7 @@ export const updateAppDetails = async (id, data) => {
   if (env !== undefined) { updates.push(`env = $${params.push(envStr)}`); }
   if (command !== undefined) { updates.push(`command = $${params.push(cmdStr)}`); }
   if (args !== undefined) { updates.push(`args = $${params.push(argStr)}`); }
+  if (url !== undefined) { updates.push(`url = $${params.push(url)}`); }
   if (db_host !== undefined) { updates.push(`db_host = $${params.push(db_host)}`); }
   if (db_port !== undefined) { updates.push(`db_port = $${params.push(db_port)}`); }
   if (db_user !== undefined) { updates.push(`db_user = $${params.push(db_user)}`); }

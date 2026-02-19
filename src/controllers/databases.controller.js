@@ -63,7 +63,7 @@ export const createDatabase = async (req, res) => {
             name,
             namespace,
             image: 'postgres:16-alpine',
-            url: `postgres://${dbUser}:${dbPass}@${baseDomain}:PORT/${dbName}`,
+            url: `postgres://${dbUser}:${dbPass}@database.${namespace}.svc.cluster.local:5432/${dbName}`,
             userId: user.id,
             planId: plan.id,
             type: 'database',
@@ -102,7 +102,7 @@ export const createDatabase = async (req, res) => {
                 status: 'running'
             });
 
-            res.status(201).json({ id: appId, name, status: 'provisioning', url: publicUrl });
+            res.status(201).json({ id: appId, name, status: 'provisioning', url: internalUrl });
         } catch (err) {
             logger.error('DB K8s creation failed', err);
             // We don't delete namespace here to preserve PVC as per requirements if it failed later
