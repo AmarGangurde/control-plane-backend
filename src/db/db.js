@@ -137,11 +137,11 @@ const initDb = async () => {
 
     // Managed Database Plans (Pod price = App Plan * 1.3, Storage = 2 paise/GB)
     // db-small: (25*1.3) = 32 + (1*2) = 2 -> 34 total (split: 32 pod, 2 storage)
-    await client.query(upsertPlan, ['db-small', 'DB Small', '250m', '50m', '256Mi', '128Mi', 32, '1Gi']);
+    await client.query(upsertPlan, ['db-small', 'DB Small', '250m', '50m', '512Mi', '128Mi', 40, '5Gi']);
     // db-medium: (35*1.3) = 45 + (5*2) = 10 -> 55 total (split: 45 pod, 10 storage)
-    await client.query(upsertPlan, ['db-medium', 'DB Medium', '500m', '100m', '512Mi', '256Mi', 45, '5Gi']);
+    await client.query(upsertPlan, ['db-medium', 'DB Medium', '500m', '100m', '512Mi', '256Mi', 56, '10Gi']);
     // db-large: (1000*1.3) = 89 + (10*2) = 20 -> 109 total (split: 89 pod, 20 storage)
-    await client.query(upsertPlan, ['db-large', 'DB Large', '1000m', '200m', '1024Mi', '512Mi', 89, '10Gi']);
+    await client.query(upsertPlan, ['db-large', 'DB Large', '700m', '200m', '1024Mi', '512Mi', 75, '20Gi']);
 
     // Add runtime column if missing 
     await client.query(`
