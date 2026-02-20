@@ -6,8 +6,13 @@ import { v4 as uuidv4 } from 'uuid';
 /**
  * Starts billing for a pod.
  * Deducts 1 hour cost as reserve (in Paise).
+ * @param {string} podId - The ID of the pod/app.
+ * @param {string} userId - The ID of the user.
+ * @param {number} hourlyRatePaise - The amount to reserve (deducted from balance).
+ * @param {number} [hourlyRateToSet] - Optional rate to store in apps.hourly_rate (defaults to hourlyRatePaise).
  */
-export const startPodBilling = async (podId, userId, hourlyRatePaise) => {
+export const startPodBilling = async (podId, userId, hourlyRatePaise, hourlyRateToSet) => {
+    const rateToSet = hourlyRateToSet !== undefined ? hourlyRateToSet : hourlyRatePaise;
     const now = Math.floor(Date.now() / 1000);
     const client = await db.getClient();
 
@@ -46,7 +51,7 @@ export const startPodBilling = async (podId, userId, hourlyRatePaise) => {
                 reserved_amount = $4,
                 total_charged = 0
             WHERE id = $5
-        `, [hourlyRatePaise, now, now, hourlyRatePaise, podId]);
+        `, [rateToSet, now, now, hourlyRatePaise, podId]);
 
         await client.query('COMMIT');
     } catch (err) {

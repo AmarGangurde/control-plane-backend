@@ -85,7 +85,7 @@ export const createDatabase = async (req, res) => {
         // 2. Start Billing (Pod + Storage combined for the 1-hour reserve)
         if (combinedRate > 0) {
             try {
-                await startPodBilling(appId, user.id, combinedRate);
+                await startPodBilling(appId, user.id, combinedRate, plan.price_per_hour);
             } catch (e) {
                 await db.query("UPDATE apps SET status = 'deleted' WHERE id = $1", [appId]);
                 return res.status(402).json({ error: e.message });
@@ -179,7 +179,7 @@ export const startDatabase = async (req, res) => {
     });
 
     if (combinedRate > 0) {
-        await startPodBilling(app.id, req.user.id, combinedRate);
+        await startPodBilling(app.id, req.user.id, combinedRate, plan.price_per_hour);
     }
 
     await updateAppDetails(app.id, { status: 'running' });
