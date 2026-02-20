@@ -16,7 +16,7 @@ export const killAppCompletely = async (app) => {
                 await k8sService.deleteNamespacedDeployment('database', app.namespace);
             }
             await db.query(
-                "UPDATE apps SET status = 'stopped', reserved_amount = 0 WHERE id = $1",
+                "UPDATE apps SET status = 'stopped' WHERE id = $1",
                 [app.id]
             );
             logger.info(`Database ${app.id} stopped (PVC preserved)`);

@@ -63,16 +63,16 @@ export const startPodBilling = async (podId, userId, hourlyRatePaise, hourlyRate
 };
 
 /**
- * Stops billing for a pod.
- * Refunds remaining reserved amount (in Paise).
+ * Stops billing for a pod and settles the final fractional charge.
+ * Retains storage reserve for databases unless isDestroying is true.
  */
-export const stopPodBilling = async (podId) => {
+export const stopPodBilling = async (podId, isDestroying = false) => {
     const client = await db.getClient();
     try {
         await client.query('BEGIN');
 
         const { rows } = await client.query(
-            'SELECT user_id, reserved_amount, total_charged, name, type, started_at FROM apps WHERE id = $1',
+            'SELECT * FROM apps WHERE id = $1 FOR UPDATE',
             [podId]
         );
         const app = rows[0];
@@ -81,36 +81,102 @@ export const stopPodBilling = async (podId) => {
             return;
         }
 
-        // Refund reserved amount to balance (if any)
-        if (app.reserved_amount > 0) {
+        const now = Math.floor(Date.now() / 1000);
+
+        // 1. Calculate and charge fractional cost since last_billed_at
+        const elapsedSeconds = now - app.last_billed_at;
+        let effectiveHourlyRate = 0;
+        if (app.status === 'running') {
+            effectiveHourlyRate += (app.hourly_rate || 0);
+        }
+        if (app.type === 'database') {
+            effectiveHourlyRate += (app.storage_hourly_rate || 0);
+        }
+
+        let currentReserved = Number(app.reserved_amount || 0);
+        let currentTotalCharged = Number(app.total_charged || 0);
+        let actualLastBilledAt = app.last_billed_at;
+
+        if (effectiveHourlyRate > 0 && elapsedSeconds > 0) {
+            const costFloat = (effectiveHourlyRate * elapsedSeconds) / 3600;
+            const cost = Math.floor(costFloat);
+
+            if (cost > 0) {
+                const secondsCharged = Math.floor((cost * 3600) / effectiveHourlyRate);
+                actualLastBilledAt = Number(app.last_billed_at) + secondsCharged;
+
+                const reserveDeduction = Math.min(cost, currentReserved);
+                const overflow = cost - reserveDeduction;
+
+                if (overflow > 0) {
+                    await client.query('UPDATE users SET balance = balance - $1 WHERE id = $2', [overflow, app.user_id]);
+                }
+                if (reserveDeduction > 0) {
+                    currentReserved -= reserveDeduction;
+                    await client.query('UPDATE users SET reserved_balance = reserved_balance - $1 WHERE id = $2', [reserveDeduction, app.user_id]);
+                }
+
+                currentTotalCharged += cost;
+            } else {
+                actualLastBilledAt = now;
+            }
+        }
+
+        // 2. Determine target reserve
+        let targetReserve = 0;
+        if (app.type === 'database' && !isDestroying) {
+            targetReserve = Number(app.storage_hourly_rate || 0);
+        }
+
+        // 3. Adjust reserves to meet target
+        if (currentReserved > targetReserve) {
+            const refundAmount = currentReserved - targetReserve;
             await client.query(
                 'UPDATE users SET balance = balance + $1, reserved_balance = reserved_balance - $2 WHERE id = $3',
-                [app.reserved_amount, app.reserved_amount, app.user_id]
+                [refundAmount, refundAmount, app.user_id]
             );
 
             // Log refund in history
             await client.query(
                 'INSERT INTO transactions (id, user_id, amount, type, status, external_id, metadata) VALUES ($1, $2, $3, $4, $5, $6, $7)',
-                [uuidv4(), app.user_id, app.reserved_amount, 'refund', 'success', `Refund: ${app.name}`, JSON.stringify({ type: app.type })]
+                [uuidv4(), app.user_id, refundAmount, 'refund', 'success', `Refund: ${app.name}`, JSON.stringify({ type: app.type })]
             );
+            currentReserved = targetReserve;
+        } else if (currentReserved < targetReserve) {
+            // Take what we can to meet target (for storage)
+            const amountNeeded = targetReserve - currentReserved;
+            const { rows: uRows } = await client.query('SELECT balance FROM users WHERE id = $1', [app.user_id]);
+            const userBal = uRows[0]?.balance || 0;
+            const amountToTake = Math.min(amountNeeded, userBal);
+
+            if (amountToTake > 0) {
+                await client.query(
+                    'UPDATE users SET balance = balance - $1, reserved_balance = reserved_balance + $2 WHERE id = $3',
+                    [amountToTake, amountToTake, app.user_id]
+                );
+                currentReserved += amountToTake;
+                logger.info(`Storage target reserve taken during stop for DB ${app.id} (+${amountToTake})`);
+            }
         }
 
-        // Log the FINAL USAGE SUMMARY
-        if (app.total_charged > 0) {
-            const now = Math.floor(Date.now() / 1000);
+        // 4. Log the FINAL USAGE SUMMARY for compute
+        if ((app.status === 'running' || isDestroying) && currentTotalCharged > 0) {
             const durationSeconds = now - app.started_at;
             const metadata = JSON.stringify({ duration: durationSeconds, type: app.type });
 
             await client.query(
                 'INSERT INTO transactions (id, user_id, amount, type, status, external_id, metadata) VALUES ($1, $2, $3, $4, $5, $6, $7)',
-                [uuidv4(), app.user_id, -app.total_charged, 'pod_burn_receipt', 'success', app.name, metadata]
+                [uuidv4(), app.user_id, -currentTotalCharged, 'pod_burn_receipt', 'success', app.name, metadata]
             );
+            currentTotalCharged = 0; // Reset after logging receipt
         }
 
-        // Reset app billing fields
+        // 5. Update app billing state
+        const newStatus = isDestroying ? 'deleted' : 'stopped';
+
         await client.query(
-            "UPDATE apps SET status = 'stopped', reserved_amount = 0 WHERE id = $1",
-            [podId]
+            "UPDATE apps SET status = $1, reserved_amount = $2, total_charged = $3, last_billed_at = $4 WHERE id = $5",
+            [newStatus, currentReserved, currentTotalCharged, actualLastBilledAt, podId]
         );
 
         await client.query('COMMIT');

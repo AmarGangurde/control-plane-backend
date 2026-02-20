@@ -227,10 +227,8 @@ export const destroyDatabase = async (req, res) => {
     const app = await getAppById(req.params.id);
     if (!app || app.user_id !== req.user.id) return res.status(404).json({ error: 'DB not found' });
 
-    // 1. Stop billing if running
-    if (app.status === 'running') {
-        await stopPodBilling(app.id);
-    }
+    // 1. Settle final billing and refund storage reserve
+    await stopPodBilling(app.id, true);
 
     // 2. Delete entire namespace (destroys PVC/data)
     await k8sService.deleteNamespace(app.namespace);
