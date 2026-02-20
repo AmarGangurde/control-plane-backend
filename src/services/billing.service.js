@@ -386,42 +386,7 @@ export const runBillingLoop = async () => {
                             }
                         }
                     }
-                } else if (false) { // Disabled
-                    // Logic for Stopped Databases (Storage Only Billing)
-                    // Goal: Maintain a 10-day safety net to prevent data loss
-                    const dailyCost = (currentApp.storage_hourly_rate || 0) * 24;
-                    const targetReserve = dailyCost * 10; // 10 Days
-                    const minSafeReserve = dailyCost * 5; // 5 Days trigger
-
-                    if (currentReserved < minSafeReserve) {
-                        const amountNeeded = targetReserve - currentReserved;
-
-                        const { rows: userRows } = await client.query(
-                            'SELECT balance FROM users WHERE id = $1',
-                            [currentApp.user_id]
-                        );
-                        const user = userRows[0];
-
-                        // Take what we can get, up to the target amount
-                        const amountToTake = Math.min(amountNeeded, user.balance);
-
-                        if (amountToTake > 0) {
-                            await client.query(
-                                'UPDATE users SET balance = balance - $1, reserved_balance = reserved_balance + $2 WHERE id = $3',
-                                [amountToTake, amountToTake, currentApp.user_id]
-                            );
-                            currentReserved += amountToTake;
-                            logger.info(`Storage Safety Net: Reserved +${amountToTake} paise for DB ${currentApp.id}`);
-                        }
-                    }
-
-                    // Critical Warning if reserve is still low (less than 24 hours remaining)
-                    if (currentReserved < dailyCost) {
-                        logger.warn(`CRITICAL: User ${currentApp.user_id} DB ${currentApp.id} has < 24h storage runway!`);
-                        // TODO: Send email/SMS warning to user here
-                    }
                 }
-
                 // 8. Update app billing state
                 await client.query(`
                     UPDATE apps SET 
