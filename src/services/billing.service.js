@@ -19,27 +19,36 @@ export const startPodBilling = async (podId, userId, hourlyRatePaise, hourlyRate
     try {
         await client.query('BEGIN');
 
+        // Fetch app to check existing reserve
+        const { rows: appRows } = await client.query('SELECT name, type, reserved_amount FROM apps WHERE id = $1 FOR UPDATE', [podId]);
+        const app = appRows[0];
+        const existingReserve = Number(app?.reserved_amount || 0);
+
+        // We only need to deduct the difference to hit the 1 hour target
+        const amountToDeduct = Math.max(0, hourlyRatePaise - existingReserve);
+        const newTotalReserve = Math.max(hourlyRatePaise, existingReserve);
+
         const { rows } = await client.query('SELECT balance FROM users WHERE id = $1 FOR UPDATE', [userId]);
         const user = rows[0];
-        if (!user || user.balance < hourlyRatePaise) {
-            throw new Error('Insufficient balance to start pod. Minimum 1 hour credit required.');
+
+        if (amountToDeduct > 0) {
+            if (!user || user.balance < amountToDeduct) {
+                // Return exactly what we need for clear error messaging
+                throw new Error(`Insufficient balance to start ${app?.type || 'pod'}. Need ₹${(amountToDeduct / 100).toFixed(2)} more for 1 hour reserve.`);
+            }
+
+            // Deduct from balance, add to reserved
+            await client.query(
+                'UPDATE users SET balance = balance - $1, reserved_balance = reserved_balance + $2 WHERE id = $3',
+                [amountToDeduct, amountToDeduct, userId]
+            );
+
+            // Log initial reservation in history
+            await client.query(
+                'INSERT INTO transactions (id, user_id, amount, type, status, external_id, metadata) VALUES ($1, $2, $3, $4, $5, $6, $7)',
+                [uuidv4(), userId, -amountToDeduct, 'reservation', 'success', app?.name || 'Resource', JSON.stringify({ type: app?.type || 'app' })]
+            );
         }
-
-        // Deduct from balance, add to reserved
-        await client.query(
-            'UPDATE users SET balance = balance - $1, reserved_balance = reserved_balance + $2 WHERE id = $3',
-            [hourlyRatePaise, hourlyRatePaise, userId]
-        );
-
-        // Fetch app details for logging
-        const { rows: appRows } = await client.query('SELECT name, type FROM apps WHERE id = $1', [podId]);
-        const app = appRows[0];
-
-        // Log initial reservation in history
-        await client.query(
-            'INSERT INTO transactions (id, user_id, amount, type, status, external_id, metadata) VALUES ($1, $2, $3, $4, $5, $6, $7)',
-            [uuidv4(), userId, -hourlyRatePaise, 'reservation', 'success', app?.name || 'Resource', JSON.stringify({ type: app?.type || 'app' })]
-        );
 
         // Update app record
         await client.query(`
@@ -51,7 +60,7 @@ export const startPodBilling = async (podId, userId, hourlyRatePaise, hourlyRate
                 reserved_amount = $4,
                 total_charged = 0
             WHERE id = $5
-        `, [rateToSet, now, now, hourlyRatePaise, podId]);
+        `, [rateToSet, now, now, newTotalReserve, podId]);
 
         await client.query('COMMIT');
     } catch (err) {
