@@ -30,6 +30,9 @@ import { rateLimiter } from './middleware/rateLimit.js';
 import { frontendUrl } from './config/env.js';
 
 const app = express();
+const catchAsync = fn => (req, res, next) => {
+  Promise.resolve(fn(req, res, next)).catch(next);
+};
 
 // --- Middleware ---
 app.set('trust proxy', 1);
@@ -67,31 +70,29 @@ api.get('/billing/mock-success', processMockSuccess);
 api.get('/billing/mock-cancel', cancelPayment);
 
 // Payment callback (server-to-server, no user auth)
-api.post('/billing/callback', handleCallback);
+api.post('/billing/callback', catchAsync(handleCallback));
 
 // Protected routes (JWT session or API key)
-api.post('/apps', requireAuth, createApp);
-api.get('/apps', requireAuth, listApps);
-api.get('/apps/:id', requireAuth, getApp);
-api.get('/apps/:id/logs', requireAuth, getAppLogs);
-api.put('/apps/:id', requireAuth, updateApp);
-api.delete('/apps/:id', requireAuth, deleteApp);
+api.post('/apps', requireAuth, catchAsync(createApp));
+api.get('/apps', requireAuth, catchAsync(listApps));
+api.get('/apps/:id', requireAuth, catchAsync(getApp));
+api.get('/apps/:id/logs', requireAuth, catchAsync(getAppLogs));
+api.put('/apps/:id', requireAuth, catchAsync(updateApp));
+api.delete('/apps/:id', requireAuth, catchAsync(deleteApp));
 
-api.get('/billing/plans', requireAuth, listPlans);
+api.get('/billing/plans', requireAuth, catchAsync(listPlans));
 api.get('/billing/balance', requireAuth, getBalance);
-api.post('/billing/initiate-payment', requireAuth, initiatePayment);
-api.get('/billing/transactions', requireAuth, getTransactions);
-
-api.get('/billing/transactions', requireAuth, getTransactions);
+api.post('/billing/initiate-payment', requireAuth, catchAsync(initiatePayment));
+api.get('/billing/transactions', requireAuth, catchAsync(getTransactions));
 
 // Database routes (Physical PostgreSQL Pods)
-api.post('/databases', requireAuth, createDatabase);
-api.get('/databases', requireAuth, listDatabases);
-api.get('/databases/:id', requireAuth, getDatabase);
-api.post('/databases/:id/stop', requireAuth, stopDatabase);
-api.post('/databases/:id/start', requireAuth, startDatabase);
-api.get('/databases/:id/backup', requireAuth, downloadBackup);
-api.delete('/databases/:id', requireAuth, destroyDatabase);
+api.post('/databases', requireAuth, catchAsync(createDatabase));
+api.get('/databases', requireAuth, catchAsync(listDatabases));
+api.get('/databases/:id', requireAuth, catchAsync(getDatabase));
+api.post('/databases/:id/stop', requireAuth, catchAsync(stopDatabase));
+api.post('/databases/:id/start', requireAuth, catchAsync(startDatabase));
+api.get('/databases/:id/backup', requireAuth, catchAsync(downloadBackup));
+api.delete('/databases/:id', requireAuth, catchAsync(destroyDatabase));
 
 // Admin routes
 api.get('/admin/keys', requireAdminKey, listApiKeys);

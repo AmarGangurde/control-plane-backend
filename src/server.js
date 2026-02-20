@@ -1,3 +1,4 @@
+import 'dotenv/config';
 import app from './app.js';
 import { startBillingCron } from './services/billing.service.js';
 import db from './db/db.js';

@@ -64,7 +64,19 @@ const initDb = async () => {
       )
     `);
 
-    // ... (rest of Transactions remains same) ...
+    // Transactions
+    await client.query(`
+      CREATE TABLE IF NOT EXISTS transactions (
+        id TEXT PRIMARY KEY,
+        user_id TEXT REFERENCES users(id) ON DELETE CASCADE,
+        amount INTEGER NOT NULL,
+        type TEXT NOT NULL,
+        status TEXT DEFAULT 'pending',
+        external_id TEXT,
+        metadata TEXT,
+        created_at TIMESTAMPTZ DEFAULT NOW()
+      )
+    `);
 
     // Apps (Unified for Apps and Databases)
     await client.query(`
