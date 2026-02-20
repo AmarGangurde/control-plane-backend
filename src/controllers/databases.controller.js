@@ -215,7 +215,7 @@ export const downloadBackup = async (req, res) => {
             `postgresql://${app.db_user}:${app.db_password}@localhost:5432/${app.db_name}`
         ];
 
-        await k8sService.execAndStream(app.namespace, podName, 'app', cmd, res);
+        await k8sService.execAndStream(app.namespace, podName, 'database', cmd, res);
 
     } catch (err) {
         logger.error('Backup download failed:', err);
