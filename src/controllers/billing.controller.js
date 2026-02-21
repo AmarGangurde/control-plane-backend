@@ -99,6 +99,14 @@ export const handleWebhook = async (req, res) => {
             } finally {
                 client.release();
             }
+        } else if (eventType === 'PAYMENT_FAILED_WEBHOOK' || eventType === 'PAYMENT_FAILED' || eventType === 'PAYMENT_USER_DROPPED_WEBHOOK') {
+            if (!order_id) return res.status(400).json({ error: 'Missing order_id' });
+
+            await db.query(
+                "UPDATE transactions SET status = 'failed' WHERE external_id = $1 AND status = 'pending'",
+                [order_id]
+            );
+            logger.info(`Payment failed/dropped for transaction ${order_id}`);
         }
 
         res.status(200).json({ success: true });
@@ -167,6 +175,7 @@ export const getTransactions = async (req, res) => {
     const { rows } = await db.query(
         `SELECT * FROM transactions 
          WHERE user_id = $1 
+         AND NOT (type = 'topup' AND status IN ('pending', 'expired'))
          ORDER BY created_at DESC 
          LIMIT 50`,
         [req.user.id]
