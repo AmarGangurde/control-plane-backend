@@ -9,11 +9,9 @@ import {
   listPlans,
   getBalance,
   initiatePayment,
-  handleCallback,
-  getTransactions,
-  mockCheckout,
-  processMockSuccess,
-  cancelPayment
+  handleWebhook,
+  verifyReturn,
+  getTransactions
 } from './controllers/billing.controller.js';
 import {
   createDatabase,
@@ -64,13 +62,8 @@ const api = express.Router();
 // Public auth routes
 api.use('/auth', authRoutes);
 
-// Mock payment routes (no auth — redirect endpoints)
-api.get('/billing/mock-checkout', mockCheckout);
-api.get('/billing/mock-success', processMockSuccess);
-api.get('/billing/mock-cancel', cancelPayment);
-
-// Payment callback (server-to-server, no user auth)
-api.post('/billing/callback', catchAsync(handleCallback));
+// Cashfree Webhook
+api.post('/webhook/cashfree', catchAsync(handleWebhook));
 
 // Protected routes (JWT session or API key)
 api.post('/apps', requireAuth, catchAsync(createApp));
@@ -83,6 +76,7 @@ api.delete('/apps/:id', requireAuth, catchAsync(deleteApp));
 api.get('/billing/plans', requireAuth, catchAsync(listPlans));
 api.get('/billing/balance', requireAuth, getBalance);
 api.post('/billing/initiate-payment', requireAuth, catchAsync(initiatePayment));
+api.post('/billing/verify-return', requireAuth, catchAsync(verifyReturn));
 api.get('/billing/transactions', requireAuth, catchAsync(getTransactions));
 
 // Database routes (Physical PostgreSQL Pods)
