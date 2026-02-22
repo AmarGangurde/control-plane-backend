@@ -3,7 +3,7 @@ import { getPlans } from '../models/plan.model.js';
 import cashfreeService from '../services/cashfree.service.js';
 import db from '../db/db.js';
 import { v4 as uuidv4 } from 'uuid';
-import { frontendUrl, apiBase } from '../config/env.js';
+import { frontendUrl, apiBase, cashfree } from '../config/env.js';
 import logger from '../utils/logger.js';
 
 export const listPlans = async (req, res) => {
@@ -49,7 +49,8 @@ export const initiatePayment = async (req, res) => {
         });
 
         return res.json({
-            paymentSessionId: order.paymentSessionId
+            paymentSessionId: order.paymentSessionId,
+            environment: cashfree.env === 'production' ? 'production' : 'sandbox'
         });
     } catch (err) {
         logger.error('Cashfree order creation failed', err);

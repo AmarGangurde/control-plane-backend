@@ -20,13 +20,15 @@ pool.on('error', (err) => {
 });
 
 // --- Schema Initialization ---
-const initDb = async () => {
-  const client = await pool.connect();
-  try {
-    await client.query('BEGIN');
+const initDb = async (retries = 5) => {
+  while (retries > 0) {
+    try {
+      const client = await pool.connect();
+      try {
+        await client.query('BEGIN');
 
-    // Users
-    await client.query(`
+        // Users
+        await client.query(`
       CREATE TABLE IF NOT EXISTS users (
         id TEXT PRIMARY KEY,
         google_id TEXT UNIQUE,
@@ -37,8 +39,8 @@ const initDb = async () => {
       )
     `);
 
-    // API Keys (hashed storage)
-    await client.query(`
+        // API Keys (hashed storage)
+        await client.query(`
       CREATE TABLE IF NOT EXISTS api_keys (
         id TEXT PRIMARY KEY,
         user_id TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
@@ -49,8 +51,8 @@ const initDb = async () => {
       )
     `);
 
-    // Plans
-    await client.query(`
+        // Plans
+        await client.query(`
       CREATE TABLE IF NOT EXISTS plans (
         id TEXT PRIMARY KEY,
         name TEXT,
@@ -64,8 +66,8 @@ const initDb = async () => {
       )
     `);
 
-    // Transactions
-    await client.query(`
+        // Transactions
+        await client.query(`
       CREATE TABLE IF NOT EXISTS transactions (
         id TEXT PRIMARY KEY,
         user_id TEXT REFERENCES users(id) ON DELETE CASCADE,
@@ -78,8 +80,8 @@ const initDb = async () => {
       )
     `);
 
-    // Apps (Unified for Apps and Databases)
-    await client.query(`
+        // Apps (Unified for Apps and Databases)
+        await client.query(`
       CREATE TABLE IF NOT EXISTS apps (
         id TEXT PRIMARY KEY,
         name TEXT,
@@ -111,8 +113,8 @@ const initDb = async () => {
       )
     `);
 
-    // Add missing columns to existing tables (for safe migrations)
-    await client.query(`
+        // Add missing columns to existing tables (for safe migrations)
+        await client.query(`
       DO $$ BEGIN
         ALTER TABLE plans ADD COLUMN IF NOT EXISTS storage TEXT;
         ALTER TABLE apps ADD COLUMN IF NOT EXISTS type VARCHAR(20) DEFAULT 'app';
@@ -127,8 +129,8 @@ const initDb = async () => {
       END $$;
     `);
 
-    // Seed plans (upsert)
-    const upsertPlan = `
+        // Seed plans (upsert)
+        const upsertPlan = `
       INSERT INTO plans (id, name, cpu, cpu_request, memory, memory_request, price_per_hour, storage)
       VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
       ON CONFLICT (id) DO UPDATE SET
@@ -140,35 +142,35 @@ const initDb = async () => {
         price_per_hour = EXCLUDED.price_per_hour,
         storage = EXCLUDED.storage
     `;
-    await client.query(upsertPlan, ['p-tiny', 'Tiny (Free)', '25m', '3m', '64Mi', '10Mi', 0, null]);
-    await client.query(upsertPlan, ['p-small', 'Small', '100m', '10m', '128Mi', '20Mi', 14, null]);
-    await client.query(upsertPlan, ['p-basic', 'Basic', '250m', '25m', '256Mi', '38Mi', 25, null]);
-    await client.query(upsertPlan, ['p-medium', 'Medium', '500m', '50m', '512Mi', '77Mi', 35, null]);
-    await client.query(upsertPlan, ['p-large', 'Large', '1000m', '100m', '1024Mi', '154Mi', 69, null]);
-    await client.query(upsertPlan, ['p-xlarge', 'XLarge', '2000m', '200m', '2048Mi', '307Mi', 139, null]);
+        await client.query(upsertPlan, ['p-tiny', 'Tiny (Free)', '25m', '3m', '64Mi', '10Mi', 0, null]);
+        await client.query(upsertPlan, ['p-small', 'Small', '100m', '10m', '128Mi', '20Mi', 14, null]);
+        await client.query(upsertPlan, ['p-basic', 'Basic', '250m', '25m', '256Mi', '38Mi', 25, null]);
+        await client.query(upsertPlan, ['p-medium', 'Medium', '500m', '50m', '512Mi', '77Mi', 35, null]);
+        await client.query(upsertPlan, ['p-large', 'Large', '1000m', '100m', '1024Mi', '154Mi', 69, null]);
+        await client.query(upsertPlan, ['p-xlarge', 'XLarge', '2000m', '200m', '2048Mi', '307Mi', 139, null]);
 
-    // Managed Database Plans (Pod price = App Plan * 1.6, Storage = 2 paise/GB)
+        // Managed Database Plans (Pod price = App Plan * 1.6, Storage = 2 paise/GB)
 
-    await client.query(upsertPlan, ['db-small', 'DB Small', '250m', '50m', '512Mi', '128Mi', 40, '5Gi']);
-    await client.query(upsertPlan, ['db-medium', 'DB Medium', '500m', '100m', '512Mi', '256Mi', 56, '10Gi']);
-    await client.query(upsertPlan, ['db-large', 'DB Large', '700m', '200m', '1024Mi', '512Mi', 75, '20Gi']);
+        await client.query(upsertPlan, ['db-small', 'DB Small', '250m', '50m', '512Mi', '128Mi', 40, '5Gi']);
+        await client.query(upsertPlan, ['db-medium', 'DB Medium', '500m', '100m', '512Mi', '256Mi', 56, '10Gi']);
+        await client.query(upsertPlan, ['db-large', 'DB Large', '700m', '200m', '1024Mi', '512Mi', 75, '20Gi']);
 
-    // Add runtime column if missing 
-    await client.query(`
+        // Add runtime column if missing 
+        await client.query(`
       DO $$ BEGIN
         ALTER TABLE plans ADD COLUMN IF NOT EXISTS runtime TEXT DEFAULT 'runc';
       EXCEPTION WHEN duplicate_column THEN NULL;
       END $$;
     `);
 
-    // Kata Container plans (Coming Soon)
-    await client.query(upsertPlan, ['p-kata-small', 'Kata Small', '100m', '20m', '128Mi', '32Mi', 28, null]);
-    await client.query(upsertPlan, ['p-kata-medium', 'Kata Medium', '500m', '100m', '512Mi', '128Mi', 69, null]);
-    await client.query(upsertPlan, ['p-kata-large', 'Kata Large', '1000m', '200m', '1024Mi', '256Mi', 139, null]);
-    await client.query(`UPDATE plans SET runtime = 'kata' WHERE id IN ('p-kata-small', 'p-kata-medium', 'p-kata-large')`);
+        // Kata Container plans (Coming Soon)
+        await client.query(upsertPlan, ['p-kata-small', 'Kata Small', '100m', '20m', '128Mi', '32Mi', 28, null]);
+        await client.query(upsertPlan, ['p-kata-medium', 'Kata Medium', '500m', '100m', '512Mi', '128Mi', 69, null]);
+        await client.query(upsertPlan, ['p-kata-large', 'Kata Large', '1000m', '200m', '1024Mi', '256Mi', 139, null]);
+        await client.query(`UPDATE plans SET runtime = 'kata' WHERE id IN ('p-kata-small', 'p-kata-medium', 'p-kata-large')`);
 
-    // Sync existing apps to new pricing
-    await client.query(`
+        // Sync existing apps to new pricing
+        await client.query(`
       UPDATE apps
       SET hourly_rate = plans.price_per_hour,
           storage_hourly_rate = CASE 
@@ -179,14 +181,22 @@ const initDb = async () => {
       WHERE apps.plan_id = plans.id
     `);
 
-    await client.query('COMMIT');
-    logger.info('✅ PostgreSQL schema initialized and plans seeded.');
-  } catch (err) {
-    await client.query('ROLLBACK');
-    logger.error('❌ Failed to initialize database schema:', err.message);
-    throw err;
-  } finally {
-    client.release();
+        await client.query('COMMIT');
+        logger.info('✅ PostgreSQL schema initialized and plans seeded.');
+      } catch (err) {
+        await client.query('ROLLBACK');
+        logger.error('❌ Failed to initialize database schema:', err.message);
+        throw err;
+      } finally {
+        client.release();
+      }
+      return; // Success
+    } catch (err) {
+      retries--;
+      logger.error(`Database initialization attempt failed. Retries left: ${retries}`, err.message);
+      if (retries === 0) throw err;
+      await new Promise(resolve => setTimeout(resolve, 3000));
+    }
   }
 };
 

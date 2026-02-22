@@ -1,4 +1,4 @@
-name: Build, Push to GHCR and Deploy to EC2
+name: Build and Push to GHCR
 
 on:
   push:
@@ -6,7 +6,7 @@ on:
   workflow_dispatch:
 
 jobs:
-  build-and-deploy:
+  build-and-push:
     runs-on: ubuntu-latest
     permissions:
       contents: read
@@ -34,54 +34,4 @@ jobs:
           echo VERSION=$VERSION
           docker build . --file Dockerfile --tag $IMAGE_ID:$VERSION
           docker push $IMAGE_ID:$VERSION
-
-      - name: Deploy to EC2 via SSH
-        uses: appleboy/ssh-action@v0.1.6
-        env:
-          CR_PAT: ${{ secrets.CR_PAT }}
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-        with:
-          host: ${{ secrets.EC2_HOST }}
-          username: ${{ secrets.EC2_USER }}
-          key: ${{ secrets.EC2_SSH_KEY }}
-          port: ${{ secrets.EC2_SSH_PORT || '22' }}
-          envs: CR_PAT,GITHUB_TOKEN
-          script: |
-            set -e
-            IMAGE_ID=ghcr.io/${{ github.repository }}
-            IMAGE_ID=$(echo $IMAGE_ID | tr '[A-Z]' '[a-z]')
-            VERSION=latest
-            
-            echo "Logging into GHCR..."
-            ACTOR=$(echo "${{ github.actor }}" | tr '[A-Z]' '[a-z]')
-            
-            # Prefer CR_PAT if set, fallback to GITHUB_TOKEN
-            TOKEN=$CR_PAT
-            if [ -z "$TOKEN" ]; then
-              echo "Using GITHUB_TOKEN"
-              TOKEN=$GITHUB_TOKEN
-            else
-              echo "Using CR_PAT"
-            fi
-            
-            echo "$TOKEN" | docker login ghcr.io -u $ACTOR --password-stdin
-            
-            echo "Pulling $IMAGE_ID:$VERSION"
-            docker pull $IMAGE_ID:$VERSION
-
-            # Deploy using Docker Compose
-            cd ~/control-plane-backend
-            git fetch origin main
-            git reset --hard origin/main
-            
-            # Ensure PostgreSQL data directory exists
-            mkdir -p ~/control-plane-backend/pgdata
-            
-            echo "🐳 Pulling latest images..."
-            docker compose pull
-            
-            echo "🚀 Starting updated containers..."
-            docker compose up -d
-            
-            echo "🏁 Deployment successful!"
 

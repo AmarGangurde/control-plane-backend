@@ -7,7 +7,7 @@ export const killAppCompletely = async (app) => {
     try {
         logger.info('killAppCompletely called', { id: app.id, namespace: app.namespace, type: app.type });
 
-        // Refund any reserved amount before deleting
+        // Refund any reserved amount before deleting haha
         await stopPodBilling(app.id);
 
         if (app.type === 'database') {
