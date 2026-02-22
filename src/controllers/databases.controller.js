@@ -138,8 +138,14 @@ export const getDatabase = async (req, res) => {
     const db = await getAppById(req.params.id);
     if (!db || db.user_id !== req.user.id) return res.status(404).json({ error: 'DB not found' });
 
-    const status = await k8sService.getAppStatus(db.namespace);
+    let status = await k8sService.getAppStatus(db.namespace);
     const metrics = await k8sService.getPodMetrics(db.namespace);
+
+    // If k8s says unknown but our DB record says stopped, keep it as stopped
+    if (status === 'unknown' && db.status === 'stopped') {
+        status = 'stopped';
+    }
+
     res.json({
         ...db,
         url: maskUrl(db.url),
