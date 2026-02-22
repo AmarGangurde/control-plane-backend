@@ -216,162 +216,181 @@ export const stopPodBilling = async (podId, isDestroying = false) => {
  */
 export const runBillingLoop = async () => {
     const now = Math.floor(Date.now() / 1000);
-    // Select everything that needs billing: 
-    // 1. Any 'running' pod (App or Database)
-    // 2. Any 'database' that exists (not deleted) for storage billing
-    const { rows: apps } = await db.query(`
-        SELECT id FROM apps 
-        WHERE status = 'running' 
-        OR (type = 'database' AND status != 'deleted')
-    `);
+    const lockClient = await db.getClient();
+    let lockAcquired = false;
 
-    for (const app of apps) {
-        try {
-            let shouldKill = false;
-            const client = await db.getClient();
+    try {
+        const { rows: lockRows } = await lockClient.query('SELECT pg_try_advisory_lock(1001) as locked');
+        lockAcquired = lockRows[0].locked;
 
+        if (!lockAcquired) {
+            return;
+        }
+
+        // Select everything that needs billing: 
+        // 1. Any 'running' pod (App or Database)
+        // 2. Any 'database' that exists (not deleted) for storage billing
+        const { rows: apps } = await lockClient.query(`
+            SELECT id FROM apps 
+            WHERE status = 'running' 
+            OR (type = 'database' AND status != 'deleted')
+        `);
+
+        for (const app of apps) {
             try {
-                await client.query('BEGIN');
+                let shouldKill = false;
+                const client = await db.getClient();
 
-                // 1. RE-FETCH inside transaction to avoid race conditions
-                const { rows } = await client.query(
-                    "SELECT * FROM apps WHERE id = $1 FOR UPDATE",
-                    [app.id]
-                );
-                const currentApp = rows[0];
+                try {
+                    await client.query('BEGIN');
 
-                // Skip if deleted or if it somehow doesn't match the billing criteria anymore
-                if (!currentApp || currentApp.status === 'deleted') {
-                    await client.query('COMMIT');
-                    continue;
-                }
+                    // 1. RE-FETCH inside transaction to avoid race conditions
+                    const { rows } = await client.query(
+                        "SELECT * FROM apps WHERE id = $1 FOR UPDATE",
+                        [app.id]
+                    );
+                    const currentApp = rows[0];
 
-                // 2. Calculate Effective Hourly Rate
-                // Pod rate is only active if 'running'
-                const podRate = currentApp.status === 'running' ? (currentApp.hourly_rate || 0) : 0;
-                // Storage rate is active for all non-deleted databases
-                const storageRate = currentApp.type === 'database' ? (currentApp.storage_hourly_rate || 0) : 0;
-                const effectiveHourlyRate = podRate + storageRate;
+                    // Skip if deleted or if it somehow doesn't match the billing criteria anymore
+                    if (!currentApp || currentApp.status === 'deleted') {
+                        await client.query('COMMIT');
+                        continue;
+                    }
 
-                // 3. Handle Free/No-cost resources
-                if (effectiveHourlyRate <= 0) {
-                    await client.query('UPDATE apps SET last_billed_at = $1 WHERE id = $2', [now, currentApp.id]);
-                    await client.query('COMMIT');
-                    continue;
-                }
+                    // 2. Calculate Effective Hourly Rate
+                    // Pod rate is only active if 'running'
+                    const podRate = currentApp.status === 'running' ? (currentApp.hourly_rate || 0) : 0;
+                    // Storage rate is active for all non-deleted databases
+                    const storageRate = currentApp.type === 'database' ? (currentApp.storage_hourly_rate || 0) : 0;
+                    const effectiveHourlyRate = podRate + storageRate;
 
-                // IMPORTANT: If last_billed_at is 0, initialize it to NOW to prevent massive debt accumulation
-                const lastBilledAt = (currentApp.last_billed_at && Number(currentApp.last_billed_at) > 0) ? Number(currentApp.last_billed_at) : now;
+                    // 3. Handle Free/No-cost resources
+                    if (effectiveHourlyRate <= 0) {
+                        await client.query('UPDATE apps SET last_billed_at = $1 WHERE id = $2', [now, currentApp.id]);
+                        await client.query('COMMIT');
+                        continue;
+                    }
 
-                const elapsedSinceLastBill = now - lastBilledAt;
-                if (elapsedSinceLastBill <= 0) {
-                    await client.query('COMMIT');
-                    continue;
-                }
+                    // IMPORTANT: If last_billed_at is 0, initialize it to NOW to prevent massive debt accumulation
+                    const lastBilledAt = (currentApp.last_billed_at && Number(currentApp.last_billed_at) > 0) ? Number(currentApp.last_billed_at) : now;
 
-                const costFloat = (effectiveHourlyRate * elapsedSinceLastBill) / 3600;
+                    const elapsedSinceLastBill = now - lastBilledAt;
+                    if (elapsedSinceLastBill <= 0) {
+                        await client.query('COMMIT');
+                        continue;
+                    }
 
-                // 4. Only charge if we have accumulated at least 1 Paise of cost
-                if (costFloat < 1) {
-                    await client.query('COMMIT');
-                    continue;
-                }
+                    const costFloat = (effectiveHourlyRate * elapsedSinceLastBill) / 3600;
 
-                const cost = Math.floor(costFloat);
+                    // 4. Only charge if we have accumulated at least 1 Paise of cost
+                    if (costFloat < 1) {
+                        await client.query('COMMIT');
+                        continue;
+                    }
 
-                // 5. PRECISION FIX: Only advance time for the exact amount we charged
-                const secondsCharged = Math.floor((cost * 3600) / effectiveHourlyRate);
-                const actualLastBilledAt = lastBilledAt + secondsCharged;
+                    const cost = Math.floor(costFloat);
 
-                let currentReserved = currentApp.reserved_amount;
+                    // 5. PRECISION FIX: Only advance time for the exact amount we charged
+                    const secondsCharged = Math.floor((cost * 3600) / effectiveHourlyRate);
+                    const actualLastBilledAt = lastBilledAt + secondsCharged;
 
-                // 6. Deduct the cost from the reserve and/or main balance
-                if (cost > 0) {
-                    const reserveDeduction = Math.min(cost, currentApp.reserved_amount);
-                    const overflow = cost - reserveDeduction;
+                    let currentReserved = currentApp.reserved_amount;
 
-                    let userBalance = 0;
-                    if (overflow > 0) {
-                        const { rows: uRows } = await client.query('SELECT balance FROM users WHERE id = $1', [currentApp.user_id]);
-                        if (uRows.length > 0) userBalance = uRows[0].balance;
+                    // 6. Deduct the cost from the reserve and/or main balance
+                    if (cost > 0) {
+                        const reserveDeduction = Math.min(cost, currentApp.reserved_amount);
+                        const overflow = cost - reserveDeduction;
 
-                        if (userBalance < overflow) {
-                            // INSUFFICIENT FUNDS for the *past* interval
-                            if (currentApp.status === 'running') {
-                                logger.info(`Insufficient funds for running app ${currentApp.id}. Killing.`);
-                                shouldKill = true;
-                            } else {
-                                logger.warn(`Storage Grace Period (Debt): User ${currentApp.user_id} DB ${currentApp.id} skipped billing.`);
+                        let userBalance = 0;
+                        if (overflow > 0) {
+                            const { rows: uRows } = await client.query('SELECT balance FROM users WHERE id = $1', [currentApp.user_id]);
+                            if (uRows.length > 0) userBalance = uRows[0].balance;
+
+                            if (userBalance < overflow) {
+                                // INSUFFICIENT FUNDS for the *past* interval
+                                if (currentApp.status === 'running') {
+                                    logger.info(`Insufficient funds for running app ${currentApp.id}. Killing.`);
+                                    shouldKill = true;
+                                } else {
+                                    logger.warn(`Storage Grace Period (Debt): User ${currentApp.user_id} DB ${currentApp.id} skipped billing.`);
+                                }
+                                await client.query('COMMIT');
+                                if (shouldKill) {
+                                    try {
+                                        const { rows: fullAppRows } = await db.query('SELECT * FROM apps WHERE id = $1', [currentApp.id]);
+                                        if (fullAppRows[0]) await killAppCompletely(fullAppRows[0]);
+                                    } catch (kErr) { logger.error('Error killing app:', kErr); }
+                                }
+                                continue;
                             }
-                            await client.query('COMMIT');
-                            if (shouldKill) {
-                                try {
-                                    const { rows: fullAppRows } = await db.query('SELECT * FROM apps WHERE id = $1', [currentApp.id]);
-                                    if (fullAppRows[0]) await killAppCompletely(fullAppRows[0]);
-                                } catch (kErr) { logger.error('Error killing app:', kErr); }
-                            }
-                            continue;
+
+                            // Deduct from balance
+                            await client.query('UPDATE users SET balance = balance - $1 WHERE id = $2', [overflow, currentApp.user_id]);
                         }
 
-                        // Deduct from balance
-                        await client.query('UPDATE users SET balance = balance - $1 WHERE id = $2', [overflow, currentApp.user_id]);
+                        if (reserveDeduction > 0) {
+                            currentReserved -= reserveDeduction;
+                            await client.query('UPDATE users SET reserved_balance = reserved_balance - $1 WHERE id = $2', [reserveDeduction, currentApp.user_id]);
+                        }
                     }
 
-                    if (reserveDeduction > 0) {
-                        currentReserved -= reserveDeduction;
-                        await client.query('UPDATE users SET reserved_balance = reserved_balance - $1 WHERE id = $2', [reserveDeduction, currentApp.user_id]);
+                    // 7. Proactive Re-reservation (Balance the reserve)
+                    const targetReserve = Math.ceil(effectiveHourlyRate); // 1 hour buffer
+
+                    if (currentReserved < targetReserve) {
+                        const amountNeeded = targetReserve - currentReserved;
+                        const { rows: userRows } = await client.query('SELECT balance FROM users WHERE id = $1', [currentApp.user_id]);
+                        const user = userRows[0];
+                        const amountToTake = Math.min(amountNeeded, user?.balance || 0);
+
+                        if (amountToTake > 0) {
+                            await client.query(
+                                'UPDATE users SET balance = balance - $1, reserved_balance = reserved_balance + $2 WHERE id = $3',
+                                [amountToTake, amountToTake, currentApp.user_id]
+                            );
+                            currentReserved += amountToTake;
+                            logger.info(`Auto-reserved for ${currentApp.type} ${currentApp.id} (+${amountToTake} paise)`);
+                        } else if (currentReserved <= 0 && currentApp.status === 'running') {
+                            shouldKill = true;
+                        }
                     }
+
+                    // 8. Update app billing state
+                    await client.query(`
+                        UPDATE apps SET 
+                            reserved_amount = $1,
+                            total_charged = total_charged + $2,
+                            last_billed_at = $3
+                        WHERE id = $4
+                    `, [currentReserved, cost, actualLastBilledAt, currentApp.id]);
+
+                    await client.query('COMMIT');
+                } catch (err) {
+                    await client.query('ROLLBACK');
+                    throw err;
+                } finally {
+                    client.release();
                 }
 
-                // 7. Proactive Re-reservation (Balance the reserve)
-                const targetReserve = Math.ceil(effectiveHourlyRate); // 1 hour buffer
-
-                if (currentReserved < targetReserve) {
-                    const amountNeeded = targetReserve - currentReserved;
-                    const { rows: userRows } = await client.query('SELECT balance FROM users WHERE id = $1', [currentApp.user_id]);
-                    const user = userRows[0];
-                    const amountToTake = Math.min(amountNeeded, user?.balance || 0);
-
-                    if (amountToTake > 0) {
-                        await client.query(
-                            'UPDATE users SET balance = balance - $1, reserved_balance = reserved_balance + $2 WHERE id = $3',
-                            [amountToTake, amountToTake, currentApp.user_id]
-                        );
-                        currentReserved += amountToTake;
-                        logger.info(`Auto-reserved for ${currentApp.type} ${currentApp.id} (+${amountToTake} paise)`);
-                    } else if (currentReserved <= 0 && currentApp.status === 'running') {
-                        shouldKill = true;
+                if (shouldKill) {
+                    logger.warn(`App ${app.id} stopped due to insufficient balance`);
+                    const { rows } = await db.query('SELECT * FROM apps WHERE id = $1', [app.id]);
+                    const fullApp = rows[0];
+                    if (fullApp) {
+                        await killAppCompletely(fullApp);
                     }
                 }
-
-                // 8. Update app billing state
-                await client.query(`
-                    UPDATE apps SET 
-                        reserved_amount = $1,
-                        total_charged = total_charged + $2,
-                        last_billed_at = $3
-                    WHERE id = $4
-                `, [currentReserved, cost, actualLastBilledAt, currentApp.id]);
-
-                await client.query('COMMIT');
             } catch (err) {
-                await client.query('ROLLBACK');
-                throw err;
-            } finally {
-                client.release();
+                logger.error(`Error billing app ${app.id}:`, err);
             }
-
-            if (shouldKill) {
-                logger.warn(`App ${app.id} stopped due to insufficient balance`);
-                const { rows } = await db.query('SELECT * FROM apps WHERE id = $1', [app.id]);
-                const fullApp = rows[0];
-                if (fullApp) {
-                    await killAppCompletely(fullApp);
-                }
-            }
-        } catch (err) {
-            logger.error(`Error billing app ${app.id}:`, err);
         }
+    } catch (err) {
+        logger.error('Billing loop error:', err);
+    } finally {
+        if (lockAcquired) {
+            await lockClient.query('SELECT pg_advisory_unlock(1001)');
+        }
+        lockClient.release();
     }
 };
 
