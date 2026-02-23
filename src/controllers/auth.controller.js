@@ -8,7 +8,7 @@ const isProd = process.env.NODE_ENV === 'production' || process.env.NODE_ENV ===
 const COOKIE_OPTIONS = {
   httpOnly: true,
   secure: isProd,
-  sameSite: isProd ? 'strict' : 'lax',
+  sameSite: isProd ? 'lax' : 'lax', // Use 'lax' to ensure persistence on refresh and redirects
   maxAge: 7 * 24 * 60 * 60 * 1000, // 7 days
   path: '/',
 };
