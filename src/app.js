@@ -43,6 +43,7 @@ const allowedOrigins = [
   'http://localhost:3000',
   'https://wrexer.com',
   'https://www.wrexer.com',
+  'https://dev.wrexer.com',
 ].filter(Boolean);
 
 app.use(cors({
