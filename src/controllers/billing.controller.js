@@ -50,6 +50,7 @@ export const initiatePayment = async (req, res) => {
 
         return res.json({
             paymentSessionId: order.paymentSessionId,
+            orderId: order.orderId,
             environment: cashfree.env === 'production' ? 'production' : 'sandbox'
         });
     } catch (err) {
@@ -61,6 +62,7 @@ export const initiatePayment = async (req, res) => {
 export const handleWebhook = async (req, res) => {
     try {
         const payload = req.body;
+        logger.info(`Received Cashfree webhook: ${JSON.stringify(payload)}`);
 
         // Cashfree webhook format usually has type as PAYMENT_SUCCESS_WEBHOOK
         // or just rely on data.order.order_status
@@ -71,7 +73,10 @@ export const handleWebhook = async (req, res) => {
         // per instructions: "Verify event type = PAYMENT_SUCCESS, Extract order_id, Mark payment as SUCCESS"
 
         if (eventType === 'PAYMENT_SUCCESS_WEBHOOK' || eventType === 'PAYMENT_SUCCESS') {
-            if (!order_id) return res.status(400).json({ error: 'Missing order_id' });
+            if (!order_id) {
+                logger.error('Missing order_id in success webhook');
+                return res.status(400).json({ error: 'Missing order_id' });
+            }
 
             const client = await db.getClient();
             try {
@@ -91,7 +96,9 @@ export const handleWebhook = async (req, res) => {
                         'UPDATE users SET balance = balance + $1 WHERE id = $2',
                         [Math.abs(transaction.amount), transaction.user_id]
                     );
-                    logger.info(`Payment successful for transaction ${order_id}`);
+                    logger.info(`Payment successful for transaction ${order_id} - user ${transaction.user_id}`);
+                } else {
+                    logger.info(`Transaction ${order_id} already processed or not pending.`);
                 }
                 await client.query('COMMIT');
             } catch (err) {
@@ -101,7 +108,10 @@ export const handleWebhook = async (req, res) => {
                 client.release();
             }
         } else if (eventType === 'PAYMENT_FAILED_WEBHOOK' || eventType === 'PAYMENT_FAILED' || eventType === 'PAYMENT_USER_DROPPED_WEBHOOK') {
-            if (!order_id) return res.status(400).json({ error: 'Missing order_id' });
+            if (!order_id) {
+                logger.error('Missing order_id in failure webhook');
+                return res.status(400).json({ error: 'Missing order_id' });
+            }
 
             await db.query(
                 "UPDATE transactions SET status = 'failed' WHERE external_id = $1 AND status = 'pending'",
@@ -112,7 +122,7 @@ export const handleWebhook = async (req, res) => {
 
         res.status(200).json({ success: true });
     } catch (err) {
-        logger.error('Webhook processing failed', err.message);
+        logger.error('Webhook processing failed', err);
         res.status(400).json({ error: 'Webhook processing error' });
     }
 };
