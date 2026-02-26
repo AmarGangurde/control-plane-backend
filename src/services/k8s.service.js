@@ -348,7 +348,7 @@ class K8sService {
           name: 'app',
           annotations: {
             'kubernetes.io/ingress.class': 'traefik',
-            'traefik.ingress.kubernetes.io/router.entrypoints': 'web'
+            'traefik.ingress.kubernetes.io/router.entrypoints': 'web,websecure'
           }
         },
         spec: {
