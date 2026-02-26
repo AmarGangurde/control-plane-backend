@@ -39,8 +39,12 @@ class K8sService {
     }
 
     const cluster = kc.getCurrentCluster();
-    if (cluster && (cluster.server.includes('localhost') || cluster.server.includes('127.0.0.1'))) {
-      cluster.skipTLSVerify = true;
+    if (cluster) {
+      if (cluster.server.includes('localhost') || cluster.server.includes('127.0.0.1') || cluster.server.includes('10.43.0.1')) {
+        logger.info(`🔄 Overriding K8s server from ${cluster.server} to https://192.168.1.2:6443`);
+        cluster.server = 'https://192.168.1.2:6443';
+        cluster.skipTLSVerify = true;
+      }
     }
 
     this.core = kc.makeApiClient(k8s.CoreV1Api);
