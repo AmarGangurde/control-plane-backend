@@ -1,6 +1,7 @@
 import express from 'express';
 import cors from 'cors';
 import logger from './utils/logger.js';
+import { requestId } from './middleware/requestId.js';
 import cookieParser from 'cookie-parser';
 import authRoutes from './routes/auth.routes.js';
 import { listApiKeys } from './controllers/keys.controller.js';
@@ -34,6 +35,7 @@ const catchAsync = fn => (req, res, next) => {
 
 // --- Middleware ---
 app.set('trust proxy', 1);
+app.use(requestId);               // FIRST: assigns X-Request-ID to every request
 app.use(express.json({ limit: '1mb' }));
 app.use(cookieParser());
 
@@ -66,6 +68,9 @@ api.use('/auth', authRoutes);
 // Cashfree Webhook
 api.post('/webhook/cashfree', catchAsync(handleWebhook));
 
+// Health check (used by Kubernetes probes)
+api.get('/health', (_req, res) => res.json({ status: 'ok' }));
+
 // Protected routes (JWT session or API key)
 api.post('/apps', requireAuth, catchAsync(createApp));
 api.get('/apps', requireAuth, catchAsync(listApps));
@@ -97,7 +102,7 @@ app.use('/api', api);
 
 // Global error handler — prevents unhandled errors from crashing the process
 app.use((err, req, res, next) => {
-  logger.error('Unhandled error', err);
+  logger.error('Unhandled error', { err: err.message, stack: err.stack, path: req.path });
 
   if (res.headersSent) return next(err);
 

@@ -7,11 +7,14 @@ export const killAppCompletely = async (app) => {
     try {
         logger.info('killAppCompletely called', { id: app.id, namespace: app.namespace, type: app.type });
 
-        // Refund any reserved amount
-        await stopPodBilling(app.id);
+        // Settle billing first — refunds unreserved time
+        await stopPodBilling(app.id).catch(err =>
+            logger.warn('stopPodBilling failed (non-fatal)', { id: app.id, err: err.message })
+        );
 
         if (!app.namespace) {
-            logger.warn('killAppCompletely: missing namespace for app', app.id);
+            logger.warn('killAppCompletely: missing namespace, skipping k8s cleanup', { id: app.id });
+            await db.query("UPDATE apps SET status = 'deleted' WHERE id = $1", [app.id]);
             return true;
         }
 
@@ -19,33 +22,30 @@ export const killAppCompletely = async (app) => {
         const resourceName = app.type === 'database' ? `db-${shortId}` : `app-${shortId}`;
 
         if (app.type === 'database') {
-            // Databases: ONLY delete deployment/service to preserve PVC (for "stop" functionality)
-            // If the user actually wants to DELETE (destroy), we might need a separate 'destroy' flag
-            // but for now killAppCompletely is used for both.
+            // For databases: delete deployment + service but KEEP the PVC (stop preserves data)
+            // destroyDatabase handles full PVC deletion separately
             await k8sService.deleteNamespacedDeployment(resourceName, app.namespace);
             await k8sService.deleteNamespacedService(resourceName, app.namespace);
-
-            await db.query(
-                "UPDATE apps SET status = 'stopped' WHERE id = $1",
-                [app.id]
-            );
-            logger.info(`Database ${app.id} stopped (PVC preserved)`);
+            await db.query("UPDATE apps SET status = 'stopped' WHERE id = $1", [app.id]);
+            logger.info('Database stopped — PVC preserved', { id: app.id });
             return true;
         }
 
-        // Standard Apps: Delete all associated k8s resources but NOT the shared namespace
+        // Standard apps: delete all k8s resources (including PVC if one exists)
+        const pvcName = `app-data-${shortId}`; // PVC naming convention for apps that requested storage
         await k8sService.deleteNamespacedDeployment(resourceName, app.namespace);
         await k8sService.deleteNamespacedService(resourceName, app.namespace);
         await k8sService.deleteNamespacedIngress(resourceName, app.namespace);
+        await k8sService.deleteNamespacedPVC(pvcName, app.namespace); // 404-tolerant — no-op if not present
 
+        // Soft-delete in DB for audit trail
+        await db.query("UPDATE apps SET status = 'deleted' WHERE id = $1", [app.id]);
+        logger.info('App deleted', { id: app.id });
+        return true;
     } catch (err) {
-        logger.error('error in killAppCompletely', err?.message || err);
+        logger.error('killAppCompletely failed', { id: app.id, err: err.message });
+        // Still mark as deleted in DB to prevent the app from being stuck
+        await db.query("UPDATE apps SET status = 'deleted' WHERE id = $1", [app.id]).catch(() => { });
+        throw err;
     }
-
-    // Soft-delete for audit safety
-    await db.query(
-        "UPDATE apps SET status = 'deleted' WHERE id = $1",
-        [app.id]
-    );
-    return true;
 };

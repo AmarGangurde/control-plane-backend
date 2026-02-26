@@ -30,22 +30,22 @@ export const createDatabase = async (req, res) => {
         const plan = await getPlanById(planId);
         if (!plan || !plan.storage) return res.status(400).json({ error: 'Invalid DB plan' });
 
-        // Capacity check
+        // Per-user capacity check (prevent one user from consuming all resources)
         const { rows: caps } = await db.query(`
-      SELECT 
-        COALESCE(SUM(CAST(REPLACE(p.memory, 'Mi', '') AS INT)), 0) as ram,
-        COALESCE(SUM(CAST(REPLACE(p.storage, 'Gi', '') AS INT)), 0) as disk
-      FROM apps a JOIN plans p ON a.plan_id = p.id
-      WHERE a.type = 'database' AND a.status != 'deleted'
-    `);
+          SELECT
+            COALESCE(SUM(CAST(REPLACE(p.memory, 'Mi', '') AS INT)), 0) as ram,
+            COALESCE(SUM(CAST(REPLACE(p.storage, 'Gi', '') AS INT)), 0) as disk
+          FROM apps a JOIN plans p ON a.plan_id = p.id
+          WHERE a.type = 'database' AND a.status != 'deleted' AND a.user_id = $1
+        `, [user.id]);
 
-        const ramLimit = 20480; // 20GB
-        const diskLimit = 180;  // 180GB
+        const ramLimit = 8192;  // 8GB per user
+        const diskLimit = 100;  // 100GB per user
         if (parseInt(caps[0].ram) + parseInt(plan.memory.replace('Mi', '')) > ramLimit) {
-            return res.status(503).json({ error: 'Server RAM capacity reached' });
+            return res.status(503).json({ error: 'You have reached your RAM limit for databases.' });
         }
         if (parseInt(caps[0].disk) + parseInt(plan.storage.replace('Gi', '')) > diskLimit) {
-            return res.status(503).json({ error: 'Server Disk capacity reached' });
+            return res.status(503).json({ error: 'You have reached your disk limit for databases.' });
         }
 
         if (plan.price_per_hour > 0 && user.balance < plan.price_per_hour) {
@@ -145,7 +145,7 @@ export const getDatabase = async (req, res) => {
     const resourceName = `db-${shortId}`;
 
     let status = await k8sService.getAppStatus(resourceName, db.namespace);
-    const metrics = await k8sService.getPodMetrics(db.namespace);
+    const metrics = await k8sService.getPodMetrics(db.namespace, resourceName);
 
     // If k8s says unknown but our DB record says stopped, keep it as stopped
     if (status === 'unknown' && db.status === 'stopped') {

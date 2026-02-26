@@ -2,6 +2,7 @@ import fetch from 'node-fetch';
 import { createUser, getUserByEmail } from '../models/user.model.js';
 import { createApiKeyForUser, getApiKeyInfoForUser } from '../models/apiKey.model.js';
 import { signJwt } from '../middleware/auth.js';
+import logger from '../utils/logger.js';
 
 const isProd = process.env.NODE_ENV === 'production' || process.env.NODE_ENV === 'PROD';
 
@@ -58,7 +59,7 @@ export const googleSignIn = async (req, res) => {
     });
 
   } catch (err) {
-    console.error('googleSignIn error', err?.message || err);
+    logger.error('googleSignIn error', err);
     return res.status(500).json({ error: 'server error' });
   }
 };
@@ -91,7 +92,7 @@ export const createUserApiKey = async (req, res) => {
       message: 'API key created. This key will only be shown once. Store it securely.'
     });
   } catch (err) {
-    console.error('createUserApiKey error', err?.message || err);
+    logger.error('createUserApiKey error', err);
     return res.status(500).json({ error: 'Failed to create API key' });
   }
 };
@@ -110,7 +111,7 @@ export const getApiKeyStatus = async (req, res) => {
       created_at: keyInfo.created_at
     });
   } catch (err) {
-    console.error('getApiKeyStatus error', err?.message || err);
+    logger.error('getApiKeyStatus error', err);
     return res.status(500).json({ error: 'Failed to fetch API key status' });
   }
 };

@@ -1,241 +1,196 @@
 import * as k8s from '@kubernetes/client-node';
 import logger from '../utils/logger.js';
-import { execSync } from 'child_process';
+import { withRetry } from '../utils/retry.js';
 
 class K8sService {
   constructor() {
     const kc = new k8s.KubeConfig();
 
-    const possiblePaths = [
-      process.env.KUBECONFIG,
+    // Load config: prefer explicit env override, then common file paths, then default
+    const explicitPath = process.env.KUBECONFIG;
+    const candidates = [
+      explicitPath,
       '/home/node/.kube/config',
       '/app/k3s.yaml',
       '/app/.kube/config',
-      '/app/data/k3s.yaml'
-    ];
-
-    this.kc = kc;
+      '/app/data/k3s.yaml',
+    ].filter(Boolean);
 
     let loaded = false;
-    for (const path of possiblePaths) {
-      if (!path) continue;
+    for (const path of candidates) {
       try {
         kc.loadFromFile(path);
-        logger.info(`✅ Successfully loaded KubeConfig from: ${path}`);
+        logger.info(`Loaded KubeConfig from: ${path}`);
         loaded = true;
         break;
-      } catch (e) {
-        // Just move to the next one
-      }
+      } catch (_) { /* try next */ }
     }
 
     if (!loaded) {
       try {
         kc.loadFromDefault();
-        logger.info('ℹ️ Loaded KubeConfig from default system path');
+        logger.info('Loaded KubeConfig from default system path');
       } catch (err) {
-        logger.error('❌ Critical: Failed to find any KubeConfig. K8s operations will fail.', err.message);
+        logger.error('Critical: failed to find any KubeConfig — K8s operations will fail', err);
       }
     }
 
-    const cluster = kc.getCurrentCluster();
-    if (cluster) {
-      if (cluster.server.includes('localhost') || cluster.server.includes('127.0.0.1') || cluster.server.includes('10.43.0.1')) {
-        logger.info(`🔄 Overriding K8s server from ${cluster.server} to https://192.168.1.2:6443`);
-        cluster.server = 'https://192.168.1.2:6443';
-        cluster.skipTLSVerify = true;
+    // Optional: allow overriding the API server (e.g. when running inside a pod with
+    // a kubeconfig that points to 127.0.0.1 or localhost and we need the real node IP).
+    const apiServerOverride = process.env.K8S_API_SERVER;
+    if (apiServerOverride) {
+      const cluster = kc.getCurrentCluster();
+      if (cluster) {
+        logger.info(`Overriding K8s API server to ${apiServerOverride}`);
+        cluster.server = apiServerOverride;
+        cluster.skipTLSVerify = process.env.K8S_SKIP_TLS_VERIFY === 'true';
       }
     }
 
+    this.kc = kc;
     this.core = kc.makeApiClient(k8s.CoreV1Api);
-    logger.info('K8s client initialized', {
-      server: cluster?.server,
-      skipTLS: cluster?.skipTLSVerify
-    });
     this.apps = kc.makeApiClient(k8s.AppsV1Api);
     this.net = kc.makeApiClient(k8s.NetworkingV1Api);
     this.metrics = kc.makeApiClient(k8s.CustomObjectsApi);
+
+    const cluster = kc.getCurrentCluster();
+    logger.info('K8s client initialized', { server: cluster?.server, skipTLS: cluster?.skipTLSVerify });
   }
 
-  async getPodMetrics(namespace) {
+  // ── Metrics ────────────────────────────────────────────────────────────────
+
+  /**
+   * Returns CPU + memory for the first pod matching app=<name> in the given namespace.
+   * Falls back to zero values if metrics-server is not installed or pod has no metrics yet.
+   */
+  async getPodMetrics(namespace, name) {
     try {
-      // Fetch metrics from metrics.k8s.io
       const res = await this.metrics.listNamespacedCustomObject({
         group: 'metrics.k8s.io',
         version: 'v1beta1',
         namespace,
-        plural: 'pods'
+        plural: 'pods',
+        labelSelector: name ? `app=${name}` : undefined,
       });
 
-      const podMetrics = res.items[0];
-      if (!podMetrics || !podMetrics.containers || !podMetrics.containers[0]) {
+      const items = res.items || [];
+      if (!items.length || !items[0].containers?.length) {
         return { cpu: '0', memory: '0' };
       }
 
-      const usage = podMetrics.containers[0].usage;
-      return {
-        cpu: usage.cpu, // e.g., "100m" or "1000000n"
-        memory: usage.memory // e.g., "128Mi" or "131072Ki"
-      };
-    } catch (err) {
-      // Metrics server might not be installed or pod might not have metrics yet
+      const usage = items[0].containers[0].usage;
+      return { cpu: usage.cpu, memory: usage.memory };
+    } catch (_err) {
       return { cpu: '0', memory: '0' };
     }
   }
 
+  // ── Namespaces ─────────────────────────────────────────────────────────────
+
   async createNamespace(name) {
-    try {
-      await this.core.createNamespace({
-        body: { metadata: { name } }
-      });
-    } catch (err) {
-      if (err.body?.code !== 409) throw err; // 409 = Conflict (Already Exists)
-    }
+    await withRetry(() => this.core.createNamespace({ body: { metadata: { name } } }), {
+      label: `createNamespace(${name})`,
+      retryIf: (err) => err?.body?.code !== 409,
+    }).catch(err => {
+      if (err?.body?.code === 409) return; // already exists — fine
+      throw err;
+    });
   }
+
+  async deleteNamespace(name) {
+    if (!name) {
+      logger.warn('deleteNamespace called with empty name, skipping');
+      return;
+    }
+    await withRetry(() => this.core.deleteNamespace({ name: String(name) }), {
+      label: `deleteNamespace(${name})`,
+      retryIf: (err) => err?.body?.code !== 404,
+    }).catch(err => {
+      if (err?.body?.code === 404) return; // already gone — fine
+      throw err;
+    });
+  }
+
+  // ── Resource Quota ─────────────────────────────────────────────────────────
 
   async createQuota(namespace, maxPods = 50) {
-    // Only limit pod count to prevent runaway resource usage.
-    // Default to 50 for a shared user namespace.
-    try {
-      await this.core.createNamespacedResourceQuota({
-        namespace,
-        body: {
-          metadata: {
-            name: 'user-quota'
-          },
-          spec: {
-            hard: {
-              pods: String(maxPods)
-            }
-          }
-        }
+    await withRetry(() => this.core.createNamespacedResourceQuota({
+      namespace,
+      body: {
+        metadata: { name: 'user-quota' },
+        spec: { hard: { pods: String(maxPods) } },
+      },
+    }), { label: `createQuota(${namespace})` })
+      .catch(err => {
+        if (err?.body?.code === 409) return; // exists — fine (no update needed)
+        throw err;
       });
-    } catch (err) {
-      if (err.body?.code !== 409) throw err;
-      // If exists, we could update it, but for now just leave it
-    }
   }
 
+  // ── Deployments ────────────────────────────────────────────────────────────
+
   async createDeployment({ name, namespace, image, containerPort, plan, env, command, args, replicas = 1 }) {
-    const cpuRequest = plan?.cpu_request || '10m';
-    const cpuLimit = plan?.cpu || '100m';
-    const memoryRequest = plan?.memory_request || plan?.memory || '128Mi';
-    const memory = plan?.memory || '128Mi';
-
-    const container = {
-      name: 'app',
-      image,
-      ports: [{ containerPort }],
-      resources: {
-        requests: { cpu: cpuRequest, memory: memoryRequest },
-        limits: { cpu: cpuLimit, memory }
-      },
-      securityContext: {
-        allowPrivilegeEscalation: false
-      }
-    };
-
-    if (env && Array.isArray(env)) {
-      container.env = env;
-    }
-
-    if (command && Array.isArray(command)) {
-      container.command = command;
-    }
-
-    if (args && Array.isArray(args)) {
-      container.args = args;
-    }
-
-    const podSpec = {
-      containers: [container]
-    };
-
-    // Future RuntimeClass support (dormant until Kata nodes exist)
-    if (plan?.runtime === 'kata') {
-      podSpec.runtimeClassName = 'kata';
-      podSpec.nodeSelector = { runtime: 'kata' };
-    }
-
-    await this.apps.createNamespacedDeployment({
+    const spec = this._buildPodSpec({ image, containerPort, plan, env, command, args });
+    await withRetry(() => this.apps.createNamespacedDeployment({
       namespace,
       body: {
         metadata: { name, labels: { app: name } },
         spec: {
           replicas: parseInt(replicas, 10),
-          strategy: {
-            type: 'RollingUpdate',
-            rollingUpdate: {
-              maxSurge: 1,
-              maxUnavailable: 0
-            }
-          },
+          strategy: { type: 'RollingUpdate', rollingUpdate: { maxSurge: 1, maxUnavailable: 0 } },
           selector: { matchLabels: { app: name } },
           template: {
             metadata: { labels: { app: name } },
-            spec: podSpec
-          }
-        }
-      }
+            spec,
+          },
+        },
+      },
+    }), { label: `createDeployment(${name})` });
+  }
+
+  async updateDeployment({ name, namespace, image, containerPort, plan, env, command, args, replicas }) {
+    const current = await withRetry(
+      () => this.apps.readNamespacedDeployment({ name, namespace }),
+      { label: `readDeployment(${name})` }
+    );
+
+    const newSpec = this._buildPodSpec({
+      image: image ?? current.spec.template.spec.containers[0].image,
+      containerPort: containerPort ?? current.spec.template.spec.containers[0].ports[0].containerPort,
+      plan,
+      env: env !== undefined ? env : null,
+      command: command !== undefined ? command : null,
+      args: args !== undefined ? args : null,
+    });
+
+    current.spec.template.spec = { ...current.spec.template.spec, ...newSpec };
+    if (replicas !== undefined) current.spec.replicas = parseInt(replicas, 10);
+    current.spec.strategy = { type: 'RollingUpdate', rollingUpdate: { maxSurge: 1, maxUnavailable: 0 } };
+
+    await withRetry(() => this.apps.replaceNamespacedDeployment({ name, namespace, body: current }), {
+      label: `updateDeployment(${name})`,
     });
   }
 
-  async createPVC({ namespace, name, size = '1Gi' }) {
-    await this.core.createNamespacedPersistentVolumeClaim({
-      namespace,
-      body: {
-        metadata: { name },
-        spec: {
-          accessModes: ['ReadWriteOnce'],
-          resources: {
-            requests: { storage: size }
-          }
-        }
-      }
+  async deleteNamespacedDeployment(name, namespace) {
+    await withRetry(() => this.apps.deleteNamespacedDeployment({ name, namespace }), {
+      label: `deleteDeployment(${name})`,
+      retryIf: (err) => err?.body?.code !== 404,
+    }).catch(err => {
+      if (err?.body?.code === 404) return;
+      throw err;
     });
   }
+
+  // ── Database Deployment ────────────────────────────────────────────────────
 
   async createDatabaseDeployment({ name, namespace, plan, dbUser, dbPassword, dbName, pvcName }) {
     const cpuLimit = plan?.cpu || '250m';
     const memoryLimit = plan?.memory || '256Mi';
-
-    // PostgreSQL usually needs a bit more than nothing to start
     const cpuRequest = plan?.cpu_request || '50m';
     const memoryRequest = plan?.memory_request || '128Mi';
 
-    const podSpec = {
-      containers: [{
-        name: 'database',
-        image: 'postgres:16-alpine',
-        ports: [{ containerPort: 5432 }],
-        env: [
-          { name: 'POSTGRES_USER', value: dbUser },
-          { name: 'POSTGRES_PASSWORD', value: dbPassword },
-          { name: 'POSTGRES_DB', value: dbName },
-          { name: 'PGDATA', value: '/var/lib/postgresql/data/pgdata' }
-        ],
-        resources: {
-          requests: { cpu: cpuRequest, memory: memoryRequest },
-          limits: { cpu: cpuLimit, memory: memoryLimit }
-        },
-        volumeMounts: [{
-          name: 'data',
-          mountPath: '/var/lib/postgresql/data',
-          subPath: 'pgdata'
-        }],
-        livenessProbe: {
-          exec: { command: ['pg_isready', '-U', dbUser, '-d', dbName] },
-          initialDelaySeconds: 30,
-          periodSeconds: 10
-        }
-      }],
-      volumes: [{
-        name: 'data',
-        persistentVolumeClaim: { claimName: pvcName }
-      }]
-    };
-
-    await this.apps.createNamespacedDeployment({
+    await withRetry(() => this.apps.createNamespacedDeployment({
       namespace,
       body: {
         metadata: { name, labels: { app: name } },
@@ -244,199 +199,181 @@ class K8sService {
           selector: { matchLabels: { app: name } },
           template: {
             metadata: { labels: { app: name } },
-            spec: podSpec
-          }
-        }
-      }
-    });
+            spec: {
+              containers: [{
+                name: 'database',
+                image: 'postgres:16-alpine',
+                ports: [{ containerPort: 5432 }],
+                env: [
+                  { name: 'POSTGRES_USER', value: dbUser },
+                  { name: 'POSTGRES_PASSWORD', value: dbPassword },
+                  { name: 'POSTGRES_DB', value: dbName },
+                  { name: 'PGDATA', value: '/var/lib/postgresql/data/pgdata' },
+                ],
+                resources: {
+                  requests: { cpu: cpuRequest, memory: memoryRequest },
+                  limits: { cpu: cpuLimit, memory: memoryLimit },
+                },
+                volumeMounts: [{ name: 'data', mountPath: '/var/lib/postgresql/data', subPath: 'pgdata' }],
+                livenessProbe: {
+                  exec: { command: ['pg_isready', '-U', dbUser, '-d', dbName] },
+                  initialDelaySeconds: 30,
+                  periodSeconds: 10,
+                  failureThreshold: 5,
+                },
+                readinessProbe: {
+                  exec: { command: ['pg_isready', '-U', dbUser, '-d', dbName] },
+                  initialDelaySeconds: 5,
+                  periodSeconds: 5,
+                },
+              }],
+              volumes: [{ name: 'data', persistentVolumeClaim: { claimName: pvcName } }],
+            },
+          },
+        },
+      },
+    }), { label: `createDatabaseDeployment(${name})` });
+  }
+
+  // ── Services ───────────────────────────────────────────────────────────────
+
+  async createService({ name, namespace, servicePort, containerPort }) {
+    await withRetry(() => this.core.createNamespacedService({
+      namespace,
+      body: {
+        metadata: { name },
+        spec: {
+          selector: { app: name },
+          ports: [{ port: servicePort, targetPort: containerPort }],
+        },
+      },
+    }), { label: `createService(${name})` })
+      .catch(err => {
+        if (err?.body?.code === 409) return;
+        throw err;
+      });
   }
 
   async createDatabaseService({ name, namespace }) {
-    // Use ClusterIP for internal access only
-    const res = await this.core.createNamespacedService({
+    const res = await withRetry(() => this.core.createNamespacedService({
       namespace,
       body: {
         metadata: { name },
         spec: {
           type: 'ClusterIP',
           selector: { app: name },
-          ports: [{
-            port: 5432,
-            targetPort: 5432,
-            protocol: 'TCP'
-          }]
-        }
-      }
-    });
-    return res.body;
-  }
-
-  async deleteNamespacedDeployment(name, namespace) {
-    try {
-      await this.apps.deleteNamespacedDeployment({ name, namespace });
-    } catch (err) {
-      if (err.body?.code !== 404) throw err;
-    }
+          ports: [{ port: 5432, targetPort: 5432, protocol: 'TCP' }],
+        },
+      },
+    }), { label: `createDatabaseService(${name})` })
+      .catch(err => {
+        if (err?.body?.code === 409) return null;
+        throw err;
+      });
+    return res;
   }
 
   async deleteNamespacedService(name, namespace) {
-    try {
-      await this.core.deleteNamespacedService({ name, namespace });
-    } catch (err) {
-      if (err.body?.code !== 404) throw err;
-    }
-  }
-
-  async deleteNamespacedIngress(name, namespace) {
-    try {
-      await this.net.deleteNamespacedIngress({ name, namespace });
-    } catch (err) {
-      if (err.body?.code !== 404) throw err;
-    }
-  }
-
-  async deleteNamespacedPVC(name, namespace) {
-    try {
-      await this.core.deleteNamespacedPersistentVolumeClaim({ name, namespace });
-    } catch (err) {
-      if (err.body?.code !== 404) throw err;
-    }
-  }
-
-  async updateDeployment({ name, namespace, image, containerPort, plan, env, command, args, replicas }) {
-    const cpuRequest = plan?.cpu_request || '10m';
-    const cpuLimit = plan?.cpu || '100m';
-    const memoryRequest = plan?.memory_request || plan?.memory || '128Mi';
-    const memory = plan?.memory || '128Mi';
-
-    const container = {
-      name: 'app',
-      image,
-      ports: [{ containerPort }],
-      resources: {
-        requests: { cpu: cpuRequest, memory: memoryRequest },
-        limits: { cpu: cpuLimit, memory }
-      },
-      securityContext: {
-        allowPrivilegeEscalation: false
-      }
-    };
-
-    if (env && Array.isArray(env)) {
-      container.env = env;
-    }
-
-    if (command && Array.isArray(command)) {
-      container.command = command;
-    }
-
-    if (args && Array.isArray(args)) {
-      container.args = args;
-    }
-
-    // Read current deployment, modify, and replace (zero-downtime rolling update)
-    const current = (await this.apps.readNamespacedDeployment({ name, namespace })).body;
-
-    const podSpec = {
-      ...current.spec.template.spec,
-      containers: [container]
-    };
-
-    // Future RuntimeClass support (dormant until Kata nodes exist)
-    if (plan?.runtime === 'kata') {
-      podSpec.runtimeClassName = 'kata';
-      podSpec.nodeSelector = { runtime: 'kata' };
-    }
-
-    current.spec.template.spec = podSpec;
-    if (replicas !== undefined) {
-      current.spec.replicas = parseInt(replicas, 10);
-    }
-    current.spec.strategy = {
-      type: 'RollingUpdate',
-      rollingUpdate: {
-        maxSurge: 1,
-        maxUnavailable: 0
-      }
-    };
-
-    await this.apps.replaceNamespacedDeployment({
-      name,
-      namespace,
-      body: current
+    await withRetry(() => this.core.deleteNamespacedService({ name, namespace }), {
+      label: `deleteService(${name})`,
+      retryIf: (err) => err?.body?.code !== 404,
+    }).catch(err => {
+      if (err?.body?.code === 404) return;
+      throw err;
     });
   }
 
-  async createService({ name, namespace, servicePort, containerPort }) {
-    await this.core.createNamespacedService({
-      namespace,
-      body: {
-        metadata: { name },
-        spec: {
-          selector: { app: name },
-          ports: [{ port: servicePort, targetPort: containerPort }]
-        }
-      }
-    });
-  }
+  // ── Ingress ────────────────────────────────────────────────────────────────
 
   async createIngress({ name, namespace, host, port }) {
-    await this.net.createNamespacedIngress({
+    await withRetry(() => this.net.createNamespacedIngress({
       namespace,
       body: {
         metadata: {
           name,
           annotations: {
             'kubernetes.io/ingress.class': 'traefik',
-            'traefik.ingress.kubernetes.io/router.entrypoints': 'web,websecure'
-          }
+            'traefik.ingress.kubernetes.io/router.entrypoints': 'web,websecure',
+          },
         },
         spec: {
           ingressClassName: 'traefik',
-          rules: [
-            {
-              host,
-              http: {
-                paths: [
-                  {
-                    path: '/',
-                    pathType: 'Prefix',
-                    backend: {
-                      service: {
-                        name,
-                        port: { number: port }
-                      }
-                    }
-                  }
-                ]
-              }
-            }
-          ]
-        }
-      }
+          rules: [{
+            host,
+            http: {
+              paths: [{
+                path: '/',
+                pathType: 'Prefix',
+                backend: { service: { name, port: { number: port } } },
+              }],
+            },
+          }],
+        },
+      },
+    }), { label: `createIngress(${name})` })
+      .catch(err => {
+        if (err?.body?.code === 409) return;
+        throw err;
+      });
+  }
+
+  async deleteNamespacedIngress(name, namespace) {
+    await withRetry(() => this.net.deleteNamespacedIngress({ name, namespace }), {
+      label: `deleteIngress(${name})`,
+      retryIf: (err) => err?.body?.code !== 404,
+    }).catch(err => {
+      if (err?.body?.code === 404) return;
+      throw err;
     });
   }
 
-  async getAppStatus(name, namespace) {
-    const res = await this.core.listNamespacedPod({
+  // ── PVC ────────────────────────────────────────────────────────────────────
+
+  async createPVC({ namespace, name, size = '1Gi' }) {
+    await withRetry(() => this.core.createNamespacedPersistentVolumeClaim({
       namespace,
-      labelSelector: `app=${name}`
+      body: {
+        metadata: { name },
+        spec: {
+          accessModes: ['ReadWriteOnce'],
+          resources: { requests: { storage: size } },
+        },
+      },
+    }), { label: `createPVC(${name})` })
+      .catch(err => {
+        if (err?.body?.code === 409) return;
+        throw err;
+      });
+  }
+
+  async deleteNamespacedPVC(name, namespace) {
+    await withRetry(() => this.core.deleteNamespacedPersistentVolumeClaim({ name, namespace }), {
+      label: `deletePVC(${name})`,
+      retryIf: (err) => err?.body?.code !== 404,
+    }).catch(err => {
+      if (err?.body?.code === 404) return;
+      throw err;
     });
+  }
 
-    if (!res.body.items.length) return 'unknown';
+  // ── Pod helpers ────────────────────────────────────────────────────────────
 
-    const pods = res.body.items;
-    // If any pod is running, and at least one is ready, we consider it running
-    // During rolling update, we might have multiple pods.
+  async getAppStatus(name, namespace) {
+    const res = await withRetry(
+      () => this.core.listNamespacedPod({ namespace, labelSelector: `app=${name}` }),
+      { label: `listPods(${name})` }
+    ).catch(() => ({ items: [] }));
+
+    const pods = res.items || [];
+    if (!pods.length) return 'unknown';
+
     const statuses = pods.map(pod => {
       const phase = pod.status.phase;
       if (phase === 'Pending') return 'deploying';
       if (phase === 'Running') {
         const cs = pod.status.containerStatuses || [];
-        const ready = cs.every(s => s.ready);
-        if (ready) return 'running';
-        const crash = cs.some(s => s.state?.waiting?.reason === 'CrashLoopBackOff');
-        if (crash) return 'failed';
+        if (cs.every(s => s.ready)) return 'running';
+        if (cs.some(s => s.state?.waiting?.reason === 'CrashLoopBackOff')) return 'failed';
         return 'deploying';
       }
       if (phase === 'Failed') return 'failed';
@@ -446,93 +383,56 @@ class K8sService {
     if (statuses.includes('failed')) return 'failed';
     if (statuses.includes('deploying')) return 'deploying';
     if (statuses.includes('running')) return 'running';
-
     return 'unknown';
   }
 
   async getPodName(name, namespace) {
-    const res = await this.core.listNamespacedPod({
-      namespace,
-      labelSelector: `app=${name}`
-    });
-    if (!res.body.items.length) return null;
-    return res.body.items[0].metadata.name;
+    const res = await this.core.listNamespacedPod({ namespace, labelSelector: `app=${name}` });
+    const items = res.items || [];
+    if (!items.length) return null;
+    return items[0].metadata.name;
   }
 
   async getLogs(name, namespace) {
     try {
-      const res = await this.core.listNamespacedPod({
-        namespace,
-        labelSelector: `app=${name}`
-      });
-      if (!res.body.items.length) return 'No pods found for this app.';
+      const res = await this.core.listNamespacedPod({ namespace, labelSelector: `app=${name}` });
+      const pods = res.items || [];
+      if (!pods.length) return 'No pods found for this app.';
 
-      // Get logs from the first pod in the list
-      const pod = res.body.items[0];
+      const pod = pods[0];
       const podName = pod.metadata.name;
       const phase = pod.status.phase;
-
-      // Check if pod is still pending or creating
       const containerStatus = pod.status.containerStatuses?.[0];
+
       if (phase === 'Pending' || containerStatus?.state?.waiting) {
         return `[System] Container is starting up (${containerStatus?.state?.waiting?.reason || 'Creating'})...`;
       }
 
-      const logsRes = await this.core.readNamespacedPodLog({
-        name: podName,
-        namespace,
-        tailLines: 100 // Get last 100 lines
-      });
-
-      return logsRes.body;
+      const logsRes = await this.core.readNamespacedPodLog({ name: podName, namespace, tailLines: 200 });
+      return logsRes || '';
     } catch (err) {
-      // Handle the specific k8s error when container is not yet ready
       const body = err.response?.body || err.body;
       if (body?.message?.includes('waiting to start')) {
         return '[System] Container is initializing. Logs will be available in a few seconds...';
       }
-
       logger.error('Error fetching logs', err?.message || err);
       return `Error fetching logs: ${err?.message || 'Unknown error'}`;
     }
   }
 
-  async deleteNamespace(name) {
-    if (!name) {
-      logger.warn('k8s.deleteNamespace called with empty name, skipping');
-      return;
-    }
-
-    logger.info('k8s.deleteNamespace invoked', { name, coreExists: !!this.core, fn: typeof this.core?.deleteNamespace });
-
-    try {
-      // ensure we pass a plain string
-      const nsName = String(name);
-      await this.core.deleteNamespace({ name: nsName });
-    } catch (err) {
-      logger.error('k8s.deleteNamespace error', err?.message || err, err?.stack);
-
-      // fallback: try using kubectl if available (helps when client binding has issues)
-      try {
-        logger.info('k8s.deleteNamespace fallback: attempting kubectl delete', { name });
-        const out = execSync(`kubectl delete namespace ${String(name)}`, { stdio: 'pipe' }).toString();
-        logger.info('kubectl delete output', out.trim());
-        return;
-      } catch (kubectlErr) {
-        logger.error('kubectl fallback failed', kubectlErr?.message || kubectlErr);
-      }
-
-      throw err;
-    }
+  /**
+   * Lists all pods across all namespaces (for admin use).
+   */
+  async listAllPods() {
+    const res = await withRetry(() => this.core.listPodForAllNamespaces(), { label: 'listAllPods' });
+    return res.items || [];
   }
 
   /**
-   * Executes a command in a running pod and streams stdout.
-   * Used for pg_dump backups.
+   * Streams a command executed inside a running pod (pg_dump, etc.)
    */
   async execAndStream(namespace, podName, containerName, commandArray, stream) {
     const exec = new k8s.Exec(this.kc);
-
     return new Promise((resolve, reject) => {
       exec.exec(
         namespace,
@@ -540,15 +440,51 @@ class K8sService {
         containerName,
         commandArray,
         stream,
-        process.stderr, // log stderr to server console for debugging
-        null, // no stdin
-        false, // tty must be false for clean binary/text output
+        process.stderr,
+        null,
+        false,
         (status) => {
           if (status.status === 'Success') resolve();
           else reject(new Error(status.message));
         }
       ).catch(reject);
     });
+  }
+
+  // ── Private helpers ─────────────────────────────────────────────────────────
+
+  _buildPodSpec({ image, containerPort, plan, env, command, args }) {
+    const cpuRequest = plan?.cpu_request || '10m';
+    const cpuLimit = plan?.cpu || '100m';
+    const memoryRequest = plan?.memory_request || plan?.memory || '128Mi';
+    const memoryLimit = plan?.memory || '128Mi';
+
+    const container = {
+      name: 'app',
+      image,
+      ports: [{ containerPort }],
+      resources: {
+        requests: { cpu: cpuRequest, memory: memoryRequest },
+        limits: { cpu: cpuLimit, memory: memoryLimit },
+      },
+      securityContext: { allowPrivilegeEscalation: false },
+    };
+
+    if (env && Array.isArray(env)) container.env = env;
+    if (command && Array.isArray(command)) container.command = command;
+    if (args && Array.isArray(args)) container.args = args;
+
+    const podSpec = {
+      imagePullSecrets: [{ name: 'regcred' }],
+      containers: [container],
+    };
+
+    if (plan?.runtime === 'kata') {
+      podSpec.runtimeClassName = 'kata';
+      podSpec.nodeSelector = { runtime: 'kata' };
+    }
+
+    return podSpec;
   }
 }
 

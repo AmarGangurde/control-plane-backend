@@ -14,6 +14,7 @@ import { killAppCompletely } from '../services/app.service.js';
 import imageService from '../services/image.service.js';
 import { startPodBilling } from '../services/billing.service.js';
 import db from '../db/db.js';
+import { withRetry } from '../utils/retry.js';
 
 export const createApp = async (req, res) => {
   try {
@@ -116,19 +117,14 @@ export const createApp = async (req, res) => {
       await k8sService.createService({ name: resourceName, namespace, servicePort, containerPort });
       await k8sService.createIngress({ name: resourceName, namespace, host, port: servicePort });
     } catch (k8sErr) {
-      logger.error('K8s creation failed, rolling back billing', k8sErr);
-      await killAppCompletely({ id: appId, namespace, type: 'app' });
+      logger.error('K8s creation failed, rolling back', k8sErr);
+      await killAppCompletely({ id: appId, namespace, type: 'app' }).catch(() => { });
       throw new Error(`Cloud deployment failed: ${k8sErr.message}`);
     }
 
-    res.status(201).json({
-      id: appId,
-      name,
-      url,
-      status: 'deploying'
-    });
+    return res.status(201).json({ id: appId, name, url, status: 'deploying' });
   } catch (err) {
-    console.error(err);
+    logger.error('createApp error', err);
     res.status(500).json({ error: err.message });
   }
 };
@@ -150,8 +146,7 @@ export const getApp = async (req, res) => {
     const resourceName = app.type === 'database' ? `db-${shortId}` : `app-${shortId}`;
 
     const status = await k8sService.getAppStatus(resourceName, app.namespace);
-    const metrics = await k8sService.getPodMetrics(app.namespace); // Metrics still grouped by namespace pods, but we should probably filter?
-    // Wait, getPodMetrics currently grabs the first pod. I should update it to filter by label too.
+    const metrics = await k8sService.getPodMetrics(app.namespace, resourceName);
     res.json({ ...app, status, metrics });
   } catch (err) {
     logger.error('Error fetching app details', err?.message || err);
@@ -191,16 +186,22 @@ export const updateApp = async (req, res) => {
 
     const { image, port, env, command, args, replicas } = req.body;
 
-    if (!image && !port && (env === undefined) && (command === undefined) && (args === undefined) && (replicas === undefined)) {
+    if (!image && !port && env === undefined && command === undefined && args === undefined && replicas === undefined) {
       return res.status(400).json({ error: 'At least one field must be provided' });
     }
 
     const plan = await getPlanById(app.plan_id);
 
+    // Resolve each field: use provided value or fall back to stored value
+    const newImage = image !== undefined ? image : app.image;
+    let newPort = port !== undefined ? parseInt(port, 10) : app.container_port;
+    const newEnv = env !== undefined ? env : (app.env || null);
+    const newCommand = command !== undefined ? command : (app.command || null);
     const newArgs = args !== undefined ? args : (app.args || null);
     const newReplicas = replicas !== undefined ? parseInt(replicas, 10) : (app.replicas || 1);
 
-    if (image && image !== app.image && !port) {
+    // Auto-detect port if image changed but port was not explicitly provided
+    if (image && image !== app.image && port === undefined) {
       newPort = await imageService.getExposedPort(image);
     }
 
@@ -216,7 +217,7 @@ export const updateApp = async (req, res) => {
       env: newEnv,
       command: newCommand,
       args: newArgs,
-      replicas: newReplicas
+      replicas: newReplicas,
     });
 
     await updateAppDetails(app.id, {
@@ -225,15 +226,15 @@ export const updateApp = async (req, res) => {
       env: newEnv,
       command: newCommand,
       args: newArgs,
-      replicas: newReplicas
+      replicas: newReplicas,
     });
 
-    res.json({
+    return res.json({
       id: app.id,
       name: app.name,
       url: app.url,
       status: 'updating',
-      message: 'Rolling update initiated. Zero-downtime deployment in progress.'
+      message: 'Rolling update initiated. Zero-downtime deployment in progress.',
     });
   } catch (err) {
     logger.error('Error updating app', err?.message || err);
