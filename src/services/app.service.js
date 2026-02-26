@@ -7,14 +7,24 @@ export const killAppCompletely = async (app) => {
     try {
         logger.info('killAppCompletely called', { id: app.id, namespace: app.namespace, type: app.type });
 
-        // Refund any reserved amount before deleting haha
+        // Refund any reserved amount
         await stopPodBilling(app.id);
 
+        if (!app.namespace) {
+            logger.warn('killAppCompletely: missing namespace for app', app.id);
+            return true;
+        }
+
+        const shortId = app.id.split('-')[0];
+        const resourceName = app.type === 'database' ? `db-${shortId}` : `app-${shortId}`;
+
         if (app.type === 'database') {
-            // Databases: ONLY delete deployment to preserve PVC
-            if (app.namespace) {
-                await k8sService.deleteNamespacedDeployment('database', app.namespace);
-            }
+            // Databases: ONLY delete deployment/service to preserve PVC (for "stop" functionality)
+            // If the user actually wants to DELETE (destroy), we might need a separate 'destroy' flag
+            // but for now killAppCompletely is used for both.
+            await k8sService.deleteNamespacedDeployment(resourceName, app.namespace);
+            await k8sService.deleteNamespacedService(resourceName, app.namespace);
+
             await db.query(
                 "UPDATE apps SET status = 'stopped' WHERE id = $1",
                 [app.id]
@@ -23,12 +33,11 @@ export const killAppCompletely = async (app) => {
             return true;
         }
 
-        // Standard Apps: Full deletion
-        if (app.namespace) {
-            await k8sService.deleteNamespace(app.namespace);
-        } else {
-            logger.warn('killAppCompletely: missing namespace for app', app.id);
-        }
+        // Standard Apps: Delete all associated k8s resources but NOT the shared namespace
+        await k8sService.deleteNamespacedDeployment(resourceName, app.namespace);
+        await k8sService.deleteNamespacedService(resourceName, app.namespace);
+        await k8sService.deleteNamespacedIngress(resourceName, app.namespace);
+
     } catch (err) {
         logger.error('error in killAppCompletely', err?.message || err);
     }

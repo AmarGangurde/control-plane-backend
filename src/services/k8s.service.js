@@ -80,30 +80,39 @@ class K8sService {
   }
 
   async createNamespace(name) {
-    await this.core.createNamespace({
-      body: { metadata: { name } }
-    });
+    try {
+      await this.core.createNamespace({
+        body: { metadata: { name } }
+      });
+    } catch (err) {
+      if (err.body?.code !== 409) throw err; // 409 = Conflict (Already Exists)
+    }
   }
 
-  async createQuota(namespace) {
-    // Only limit pod count. Per-container resource limits enforce CPU/memory caps.
-    // pods: 2 allows rolling updates (old + new pod coexist briefly)
-    await this.core.createNamespacedResourceQuota({
-      namespace,
-      body: {
-        metadata: {
-          name: 'app-quota'
-        },
-        spec: {
-          hard: {
-            pods: '2'
+  async createQuota(namespace, maxPods = 50) {
+    // Only limit pod count to prevent runaway resource usage.
+    // Default to 50 for a shared user namespace.
+    try {
+      await this.core.createNamespacedResourceQuota({
+        namespace,
+        body: {
+          metadata: {
+            name: 'user-quota'
+          },
+          spec: {
+            hard: {
+              pods: String(maxPods)
+            }
           }
         }
-      }
-    });
+      });
+    } catch (err) {
+      if (err.body?.code !== 409) throw err;
+      // If exists, we could update it, but for now just leave it
+    }
   }
 
-  async createDeployment({ namespace, image, containerPort, plan, env, command, args }) {
+  async createDeployment({ name, namespace, image, containerPort, plan, env, command, args, replicas = 1 }) {
     const cpuRequest = plan?.cpu_request || '10m';
     const cpuLimit = plan?.cpu || '100m';
     const memoryRequest = plan?.memory_request || plan?.memory || '128Mi';
@@ -147,9 +156,9 @@ class K8sService {
     await this.apps.createNamespacedDeployment({
       namespace,
       body: {
-        metadata: { name: 'app' },
+        metadata: { name, labels: { app: name } },
         spec: {
-          replicas: 1,
+          replicas: parseInt(replicas, 10),
           strategy: {
             type: 'RollingUpdate',
             rollingUpdate: {
@@ -157,9 +166,9 @@ class K8sService {
               maxUnavailable: 0
             }
           },
-          selector: { matchLabels: { app: 'app' } },
+          selector: { matchLabels: { app: name } },
           template: {
-            metadata: { labels: { app: 'app' } },
+            metadata: { labels: { app: name } },
             spec: podSpec
           }
         }
@@ -167,7 +176,7 @@ class K8sService {
     });
   }
 
-  async createPVC({ namespace, name = 'pg-data', size = '1Gi' }) {
+  async createPVC({ namespace, name, size = '1Gi' }) {
     await this.core.createNamespacedPersistentVolumeClaim({
       namespace,
       body: {
@@ -182,7 +191,7 @@ class K8sService {
     });
   }
 
-  async createDatabaseDeployment({ namespace, plan, dbUser, dbPassword, dbName }) {
+  async createDatabaseDeployment({ name, namespace, plan, dbUser, dbPassword, dbName, pvcName }) {
     const cpuLimit = plan?.cpu || '250m';
     const memoryLimit = plan?.memory || '256Mi';
 
@@ -218,19 +227,19 @@ class K8sService {
       }],
       volumes: [{
         name: 'data',
-        persistentVolumeClaim: { claimName: 'pg-data' }
+        persistentVolumeClaim: { claimName: pvcName }
       }]
     };
 
     await this.apps.createNamespacedDeployment({
       namespace,
       body: {
-        metadata: { name: 'database' },
+        metadata: { name, labels: { app: name } },
         spec: {
           replicas: 1,
-          selector: { matchLabels: { app: 'database' } },
+          selector: { matchLabels: { app: name } },
           template: {
-            metadata: { labels: { app: 'database' } },
+            metadata: { labels: { app: name } },
             spec: podSpec
           }
         }
@@ -238,15 +247,15 @@ class K8sService {
     });
   }
 
-  async createDatabaseService({ namespace }) {
+  async createDatabaseService({ name, namespace }) {
     // Use ClusterIP for internal access only
     const res = await this.core.createNamespacedService({
       namespace,
       body: {
-        metadata: { name: 'database' },
+        metadata: { name },
         spec: {
           type: 'ClusterIP',
-          selector: { app: 'database' },
+          selector: { app: name },
           ports: [{
             port: 5432,
             targetPort: 5432,
@@ -266,7 +275,31 @@ class K8sService {
     }
   }
 
-  async updateDeployment({ namespace, image, containerPort, plan, env, command, args }) {
+  async deleteNamespacedService(name, namespace) {
+    try {
+      await this.core.deleteNamespacedService({ name, namespace });
+    } catch (err) {
+      if (err.body?.code !== 404) throw err;
+    }
+  }
+
+  async deleteNamespacedIngress(name, namespace) {
+    try {
+      await this.net.deleteNamespacedIngress({ name, namespace });
+    } catch (err) {
+      if (err.body?.code !== 404) throw err;
+    }
+  }
+
+  async deleteNamespacedPVC(name, namespace) {
+    try {
+      await this.core.deleteNamespacedPersistentVolumeClaim({ name, namespace });
+    } catch (err) {
+      if (err.body?.code !== 404) throw err;
+    }
+  }
+
+  async updateDeployment({ name, namespace, image, containerPort, plan, env, command, args, replicas }) {
     const cpuRequest = plan?.cpu_request || '10m';
     const cpuLimit = plan?.cpu || '100m';
     const memoryRequest = plan?.memory_request || plan?.memory || '128Mi';
@@ -298,7 +331,7 @@ class K8sService {
     }
 
     // Read current deployment, modify, and replace (zero-downtime rolling update)
-    const current = await this.apps.readNamespacedDeployment({ name: 'app', namespace });
+    const current = (await this.apps.readNamespacedDeployment({ name, namespace })).body;
 
     const podSpec = {
       ...current.spec.template.spec,
@@ -312,6 +345,9 @@ class K8sService {
     }
 
     current.spec.template.spec = podSpec;
+    if (replicas !== undefined) {
+      current.spec.replicas = parseInt(replicas, 10);
+    }
     current.spec.strategy = {
       type: 'RollingUpdate',
       rollingUpdate: {
@@ -321,31 +357,31 @@ class K8sService {
     };
 
     await this.apps.replaceNamespacedDeployment({
-      name: 'app',
+      name,
       namespace,
       body: current
     });
   }
 
-  async createService({ namespace, servicePort, containerPort }) {
+  async createService({ name, namespace, servicePort, containerPort }) {
     await this.core.createNamespacedService({
       namespace,
       body: {
-        metadata: { name: 'app' },
+        metadata: { name },
         spec: {
-          selector: { app: 'app' },
+          selector: { app: name },
           ports: [{ port: servicePort, targetPort: containerPort }]
         }
       }
     });
   }
 
-  async createIngress({ namespace, host, port }) {
+  async createIngress({ name, namespace, host, port }) {
     await this.net.createNamespacedIngress({
       namespace,
       body: {
         metadata: {
-          name: 'app',
+          name,
           annotations: {
             'kubernetes.io/ingress.class': 'traefik',
             'traefik.ingress.kubernetes.io/router.entrypoints': 'web,websecure'
@@ -363,7 +399,7 @@ class K8sService {
                     pathType: 'Prefix',
                     backend: {
                       service: {
-                        name: 'app',
+                        name,
                         port: { number: port }
                       }
                     }
@@ -377,46 +413,58 @@ class K8sService {
     });
   }
 
-  async getAppStatus(namespace) {
-    const res = await this.core.listNamespacedPod({ namespace });
+  async getAppStatus(name, namespace) {
+    const res = await this.core.listNamespacedPod({
+      namespace,
+      labelSelector: `app=${name}`
+    });
 
-    if (!res.items.length) return 'unknown';
+    if (!res.body.items.length) return 'unknown';
 
-    const pod = res.items[0];
-    const phase = pod.status.phase;
+    const pods = res.body.items;
+    // If any pod is running, and at least one is ready, we consider it running
+    // During rolling update, we might have multiple pods.
+    const statuses = pods.map(pod => {
+      const phase = pod.status.phase;
+      if (phase === 'Pending') return 'deploying';
+      if (phase === 'Running') {
+        const cs = pod.status.containerStatuses || [];
+        const ready = cs.every(s => s.ready);
+        if (ready) return 'running';
+        const crash = cs.some(s => s.state?.waiting?.reason === 'CrashLoopBackOff');
+        if (crash) return 'failed';
+        return 'deploying';
+      }
+      if (phase === 'Failed') return 'failed';
+      return 'unknown';
+    });
 
-    if (phase === 'Pending') return 'deploying';
-
-    if (phase === 'Running') {
-      const statuses = pod.status.containerStatuses || [];
-      const ready = statuses.every(s => s.ready);
-      if (ready) return 'running';
-
-      const crash = statuses.some(
-        s => s.state?.waiting?.reason === 'CrashLoopBackOff'
-      );
-      if (crash) return 'failed';
-
-      return 'deploying';
-    }
-
-    if (phase === 'Failed') return 'failed';
+    if (statuses.includes('failed')) return 'failed';
+    if (statuses.includes('deploying')) return 'deploying';
+    if (statuses.includes('running')) return 'running';
 
     return 'unknown';
   }
 
-  async getPodName(namespace) {
-    const res = await this.core.listNamespacedPod({ namespace });
-    if (!res.items.length) return null;
-    return res.items[0].metadata.name;
+  async getPodName(name, namespace) {
+    const res = await this.core.listNamespacedPod({
+      namespace,
+      labelSelector: `app=${name}`
+    });
+    if (!res.body.items.length) return null;
+    return res.body.items[0].metadata.name;
   }
 
-  async getLogs(namespace) {
+  async getLogs(name, namespace) {
     try {
-      const res = await this.core.listNamespacedPod({ namespace });
-      if (!res.items.length) return 'No pods found in namespace.';
+      const res = await this.core.listNamespacedPod({
+        namespace,
+        labelSelector: `app=${name}`
+      });
+      if (!res.body.items.length) return 'No pods found for this app.';
 
-      const pod = res.items[0];
+      // Get logs from the first pod in the list
+      const pod = res.body.items[0];
       const podName = pod.metadata.name;
       const phase = pod.status.phase;
 
@@ -432,7 +480,7 @@ class K8sService {
         tailLines: 100 // Get last 100 lines
       });
 
-      return logsRes;
+      return logsRes.body;
     } catch (err) {
       // Handle the specific k8s error when container is not yet ready
       const body = err.response?.body || err.body;

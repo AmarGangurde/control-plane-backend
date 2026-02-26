@@ -53,8 +53,10 @@ export const createDatabase = async (req, res) => {
         }
 
         const appId = uuidv4();
-        const sanitizedName = name.toLowerCase().replace(/[^a-z0-9]/g, '-');
-        const namespace = `db-${sanitizedName}-${appId.split('-')[0]}`;
+        const shortId = appId.split('-')[0];
+        const namespace = `user-${user.id}`;
+        const resourceName = `db-${shortId}`;
+        const pvcName = `data-db-${shortId}`;
 
         const dbUser = genUser();
         const dbPass = genPass();
@@ -70,7 +72,7 @@ export const createDatabase = async (req, res) => {
             name,
             namespace,
             image: 'postgres:16-alpine',
-            url: `postgres://${dbUser}:${dbPass}@database.${namespace}.svc.cluster.local:5432/${dbName}`,
+            url: `postgres://${dbUser}:${dbPass}@${resourceName}.${namespace}.svc.cluster.local:5432/${dbName}`,
             userId: user.id,
             planId: plan.id,
             type: 'database',
@@ -95,11 +97,12 @@ export const createDatabase = async (req, res) => {
         // 3. K8s Provisioning
         try {
             await k8sService.createNamespace(namespace);
-            await k8sService.createPVC({ namespace, size: plan.storage });
-            await k8sService.createDatabaseDeployment({ namespace, plan, dbUser, dbPassword: dbPass, dbName });
-            await k8sService.createDatabaseService({ namespace });
+            await k8sService.createQuota(namespace);
+            await k8sService.createPVC({ namespace, name: pvcName, size: plan.storage });
+            await k8sService.createDatabaseDeployment({ name: resourceName, namespace, plan, dbUser, dbPassword: dbPass, dbName, pvcName });
+            await k8sService.createDatabaseService({ name: resourceName, namespace });
 
-            const internalHost = `database.${namespace}.svc.cluster.local`;
+            const internalHost = `${resourceName}.${namespace}.svc.cluster.local`;
             const internalPort = 5432;
             const internalUrl = `postgres://${dbUser}:${dbPass}@${internalHost}:${internalPort}/${dbName}`;
 
@@ -138,7 +141,10 @@ export const getDatabase = async (req, res) => {
     const db = await getAppById(req.params.id);
     if (!db || db.user_id !== req.user.id) return res.status(404).json({ error: 'DB not found' });
 
-    let status = await k8sService.getAppStatus(db.namespace);
+    const shortId = db.id.split('-')[0];
+    const resourceName = `db-${shortId}`;
+
+    let status = await k8sService.getAppStatus(resourceName, db.namespace);
     const metrics = await k8sService.getPodMetrics(db.namespace);
 
     // If k8s says unknown but our DB record says stopped, keep it as stopped
@@ -159,7 +165,11 @@ export const stopDatabase = async (req, res) => {
     const app = await getAppById(req.params.id);
     if (!app || app.user_id !== req.user.id) return res.status(404).json({ error: 'DB not found' });
 
-    await k8sService.deleteNamespacedDeployment('database', app.namespace);
+    const shortId = app.id.split('-')[0];
+    const resourceName = `db-${shortId}`;
+
+    await k8sService.deleteNamespacedDeployment(resourceName, app.namespace);
+    await k8sService.deleteNamespacedService(resourceName, app.namespace);
     await stopPodBilling(app.id);
     await updateAppDetails(app.id, { status: 'stopped' });
     res.json({ status: 'stopped' });
@@ -176,12 +186,23 @@ export const startDatabase = async (req, res) => {
         return res.status(402).json({ error: 'Insufficient balance' });
     }
 
+    const shortId = app.id.split('-')[0];
+    const resourceName = `db-${shortId}`;
+    const pvcName = `data-db-${shortId}`;
+
     await k8sService.createDatabaseDeployment({
+        name: resourceName,
         namespace: app.namespace,
         plan,
         dbUser: app.db_user,
         dbPassword: app.db_password,
-        dbName: app.db_name
+        dbName: app.db_name,
+        pvcName
+    });
+
+    await k8sService.createDatabaseService({
+        name: resourceName,
+        namespace: app.namespace
     });
 
     if (combinedRate > 0) {
@@ -204,8 +225,11 @@ export const downloadBackup = async (req, res) => {
         if (app.type !== 'database') return res.status(400).json({ error: 'Not a database' });
         if (app.status !== 'running') return res.status(400).json({ error: 'Database must be running to take a backup' });
 
+        const shortId = app.id.split('-')[0];
+        const resourceName = `db-${shortId}`;
+
         // Get the running pod
-        const podName = await k8sService.getPodName(app.namespace);
+        const podName = await k8sService.getPodName(resourceName, app.namespace);
         if (!podName) return res.status(500).json({ error: 'Pod not found' });
 
         // Set headers for download
@@ -236,8 +260,14 @@ export const destroyDatabase = async (req, res) => {
     // 1. Settle final billing and refund storage reserve
     await stopPodBilling(app.id, true);
 
-    // 2. Delete entire namespace (destroys PVC/data)
-    await k8sService.deleteNamespace(app.namespace);
+    const shortId = app.id.split('-')[0];
+    const resourceName = `db-${shortId}`;
+    const pvcName = `data-db-${shortId}`;
+
+    // 2. Delete k8s resources (destroys PVC/data)
+    await k8sService.deleteNamespacedDeployment(resourceName, app.namespace);
+    await k8sService.deleteNamespacedService(resourceName, app.namespace);
+    await k8sService.deleteNamespacedPVC(pvcName, app.namespace);
 
     // 3. Soft delete in DB
     await updateAppDetails(app.id, { status: 'deleted' });

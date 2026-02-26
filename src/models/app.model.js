@@ -3,7 +3,7 @@ import db from '../db/db.js';
 export const insertApp = async (data) => {
   const {
     id, name, namespace, image, url, userId, planId,
-    containerPort, env, command, args,
+    containerPort, env, command, args, replicas = 1,
     type = 'app', storage = null, storage_hourly_rate = 0,
     db_host = null, db_port = null, db_user = null, db_password = null, db_name = null
   } = data;
@@ -17,13 +17,14 @@ export const insertApp = async (data) => {
       id, name, namespace, image, url, user_id, plan_id, 
       container_port, env, command, args, type, storage, storage_hourly_rate,
       db_host, db_port, db_user, db_password, db_name,
-      last_charged_at
+      replicas, last_charged_at
     )
-    VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19, NOW())
+    VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19, $20, NOW())
   `, [
     id, name, namespace, image, url, userId, planId,
     containerPort, envStr, cmdStr, argStr, type, storage, storage_hourly_rate,
-    db_host, db_port, db_user, db_password, db_name
+    db_host, db_port, db_user, db_password, db_name,
+    replicas
   ]);
 };
 
@@ -60,7 +61,7 @@ export const deleteAppById = async (id) => {
 
 export const updateAppDetails = async (id, data) => {
   const {
-    image, containerPort, env, command, args, url,
+    image, containerPort, env, command, args, replicas, url,
     db_host, db_port, db_user, db_password, db_name, status
   } = data;
 
@@ -76,6 +77,7 @@ export const updateAppDetails = async (id, data) => {
   if (env !== undefined) { updates.push(`env = $${params.push(envStr)}`); }
   if (command !== undefined) { updates.push(`command = $${params.push(cmdStr)}`); }
   if (args !== undefined) { updates.push(`args = $${params.push(argStr)}`); }
+  if (replicas !== undefined) { updates.push(`replicas = $${params.push(replicas)}`); }
   if (url !== undefined) { updates.push(`url = $${params.push(url)}`); }
   if (db_host !== undefined) { updates.push(`db_host = $${params.push(db_host)}`); }
   if (db_port !== undefined) { updates.push(`db_port = $${params.push(db_port)}`); }

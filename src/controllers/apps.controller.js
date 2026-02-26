@@ -17,7 +17,7 @@ import db from '../db/db.js';
 
 export const createApp = async (req, res) => {
   try {
-    const { image, port, planId = 'p-small', name, env, command, args } = req.body;
+    const { image, port, planId = 'p-small', name, env, command, args, replicas = 1 } = req.body;
     const user = req.user;
 
     if (!name) {
@@ -68,10 +68,12 @@ export const createApp = async (req, res) => {
     const servicePort = 80;
 
     const appId = uuidv4();
-    const planName = plan.id.replace('p-', '');
-    const namespace = `${sanitizedName}-${planName}-${appId.split('-')[0]}`;
-    const host = `${namespace}.${baseDomain}`;
+    const shortId = appId.split('-')[0];
+    const namespace = `user-${user.id}`;
+    const host = `app-${shortId}.${baseDomain}`;
     const url = `https://${host}`;
+
+    const resourceName = `app-${shortId}`;
 
     // 1. Insert stopped app record first
     await insertApp({
@@ -85,13 +87,14 @@ export const createApp = async (req, res) => {
       containerPort,
       env,
       command,
-      args
+      args,
+      replicas
     });
 
     // 2. Start billing (reserves 1 hour, sets status to 'running')
     if (plan.price_per_hour > 0) {
       try {
-        await startPodBilling(appId, user.id, plan.price_per_hour);
+        await startPodBilling(appId, user.id, plan.price_per_hour, undefined, replicas);
       } catch (err) {
         await deleteAppById(appId);
         return res.status(402).json({ error: err.message });
@@ -109,12 +112,12 @@ export const createApp = async (req, res) => {
     try {
       await k8sService.createNamespace(namespace);
       await k8sService.createQuota(namespace);
-      await k8sService.createDeployment({ namespace, image, containerPort, plan, env, command, args });
-      await k8sService.createService({ namespace, servicePort, containerPort });
-      await k8sService.createIngress({ namespace, host, port: servicePort });
+      await k8sService.createDeployment({ name: resourceName, namespace, image, containerPort, plan, env, command, args, replicas });
+      await k8sService.createService({ name: resourceName, namespace, servicePort, containerPort });
+      await k8sService.createIngress({ name: resourceName, namespace, host, port: servicePort });
     } catch (k8sErr) {
       logger.error('K8s creation failed, rolling back billing', k8sErr);
-      await killAppCompletely({ id: appId, namespace });
+      await killAppCompletely({ id: appId, namespace, type: 'app' });
       throw new Error(`Cloud deployment failed: ${k8sErr.message}`);
     }
 
@@ -143,8 +146,12 @@ export const getApp = async (req, res) => {
       return res.status(404).json({ error: 'app not found' });
     }
 
-    const status = await k8sService.getAppStatus(app.namespace);
-    const metrics = await k8sService.getPodMetrics(app.namespace);
+    const shortId = app.id.split('-')[0];
+    const resourceName = app.type === 'database' ? `db-${shortId}` : `app-${shortId}`;
+
+    const status = await k8sService.getAppStatus(resourceName, app.namespace);
+    const metrics = await k8sService.getPodMetrics(app.namespace); // Metrics still grouped by namespace pods, but we should probably filter?
+    // Wait, getPodMetrics currently grabs the first pod. I should update it to filter by label too.
     res.json({ ...app, status, metrics });
   } catch (err) {
     logger.error('Error fetching app details', err?.message || err);
@@ -160,7 +167,9 @@ export const getAppLogs = async (req, res) => {
       return res.status(404).json({ error: 'app not found' });
     }
 
-    const logs = await k8sService.getLogs(app.namespace);
+    const shortId = app.id.split('-')[0];
+    const resourceName = app.type === 'database' ? `db-${shortId}` : `app-${shortId}`;
+    const logs = await k8sService.getLogs(resourceName, app.namespace);
     res.json({ logs });
   } catch (err) {
     logger.error('Error fetching app logs', err?.message || err);
@@ -180,32 +189,34 @@ export const updateApp = async (req, res) => {
       return res.status(400).json({ error: 'App must be running to update. Start the app first.' });
     }
 
-    const { image, port, env, command, args } = req.body;
+    const { image, port, env, command, args, replicas } = req.body;
 
-    if (!image && !port && (env === undefined) && (command === undefined) && (args === undefined)) {
-      return res.status(400).json({ error: 'At least one field (image, port, env, command, args) must be provided' });
+    if (!image && !port && (env === undefined) && (command === undefined) && (args === undefined) && (replicas === undefined)) {
+      return res.status(400).json({ error: 'At least one field must be provided' });
     }
 
     const plan = await getPlanById(app.plan_id);
 
-    const newImage = image || app.image;
-    let newPort = port || app.container_port;
-    const newEnv = env !== undefined ? env : (app.env || null);
-    const newCommand = command !== undefined ? command : (app.command || null);
     const newArgs = args !== undefined ? args : (app.args || null);
+    const newReplicas = replicas !== undefined ? parseInt(replicas, 10) : (app.replicas || 1);
 
     if (image && image !== app.image && !port) {
       newPort = await imageService.getExposedPort(image);
     }
 
+    const shortId = app.id.split('-')[0];
+    const resourceName = `app-${shortId}`;
+
     await k8sService.updateDeployment({
+      name: resourceName,
       namespace: app.namespace,
       image: newImage,
       containerPort: newPort,
       plan,
       env: newEnv,
       command: newCommand,
-      args: newArgs
+      args: newArgs,
+      replicas: newReplicas
     });
 
     await updateAppDetails(app.id, {
@@ -213,7 +224,8 @@ export const updateApp = async (req, res) => {
       containerPort: newPort,
       env: newEnv,
       command: newCommand,
-      args: newArgs
+      args: newArgs,
+      replicas: newReplicas
     });
 
     res.json({

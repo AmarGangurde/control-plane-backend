@@ -108,6 +108,7 @@ const initDb = async (retries = 5) => {
         db_user TEXT,
         db_password TEXT,
         db_name TEXT,
+        replicas INTEGER DEFAULT 1,
         created_at TIMESTAMPTZ DEFAULT NOW(),
         last_charged_at TIMESTAMPTZ DEFAULT NOW()
       )
@@ -125,6 +126,7 @@ const initDb = async (retries = 5) => {
         ALTER TABLE apps ADD COLUMN IF NOT EXISTS db_password TEXT;
         ALTER TABLE apps ADD COLUMN IF NOT EXISTS db_name TEXT;
         ALTER TABLE apps ADD COLUMN IF NOT EXISTS storage_hourly_rate INTEGER DEFAULT 0;
+        ALTER TABLE apps ADD COLUMN IF NOT EXISTS replicas INTEGER DEFAULT 1;
       EXCEPTION WHEN duplicate_column THEN NULL;
       END $$;
     `);
@@ -169,17 +171,7 @@ const initDb = async (retries = 5) => {
         await client.query(upsertPlan, ['p-kata-large', 'Kata Large', '1000m', '200m', '1024Mi', '256Mi', 139, null]);
         await client.query(`UPDATE plans SET runtime = 'kata' WHERE id IN ('p-kata-small', 'p-kata-medium', 'p-kata-large')`);
 
-        // Sync existing apps to new pricing
-        await client.query(`
-      UPDATE apps
-      SET hourly_rate = plans.price_per_hour,
-          storage_hourly_rate = CASE 
-            WHEN apps.type = 'database' THEN CAST(REPLACE(plans.storage, 'Gi', '') AS INTEGER) * 2 
-            ELSE 0 
-          END
-      FROM plans
-      WHERE apps.plan_id = plans.id
-    `);
+        // No migration needed for existing apps as per user request
 
         await client.query('COMMIT');
         logger.info('✅ PostgreSQL schema initialized and plans seeded.');

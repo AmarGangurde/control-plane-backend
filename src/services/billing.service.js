@@ -10,8 +10,9 @@ import { v4 as uuidv4 } from 'uuid';
  * @param {string} userId - The ID of the user.
  * @param {number} hourlyRatePaise - The amount to reserve (deducted from balance).
  * @param {number} [hourlyRateToSet] - Optional rate to store in apps.hourly_rate (defaults to hourlyRatePaise).
+ * @param {number} [replicas] - Number of replicas (defaults to 1).
  */
-export const startPodBilling = async (podId, userId, hourlyRatePaise, hourlyRateToSet) => {
+export const startPodBilling = async (podId, userId, hourlyRatePaise, hourlyRateToSet, replicas = 1) => {
     const rateToSet = hourlyRateToSet !== undefined ? hourlyRateToSet : hourlyRatePaise;
     const now = Math.floor(Date.now() / 1000);
     const client = await db.getClient();
@@ -24,8 +25,8 @@ export const startPodBilling = async (podId, userId, hourlyRatePaise, hourlyRate
         const app = appRows[0];
         const existingReserve = Number(app?.reserved_amount || 0);
 
-        // Target: Exactly 1 hour of the new combined rate
-        const targetReserve = hourlyRatePaise;
+        // Target: Exactly 1 hour of the new combined rate * replicas
+        const targetReserve = hourlyRatePaise * parseInt(replicas, 10);
 
         const { rows: uRows } = await client.query('SELECT balance FROM users WHERE id = $1 FOR UPDATE', [userId]);
         const user = uRows[0];
@@ -71,9 +72,10 @@ export const startPodBilling = async (podId, userId, hourlyRatePaise, hourlyRate
                 started_at = $2,
                 last_billed_at = $3,
                 reserved_amount = $4,
+                replicas = $5,
                 total_charged = 0
-            WHERE id = $5
-        `, [rateToSet, now, startBilledAt, targetReserve, podId]);
+            WHERE id = $6
+        `, [rateToSet, now, startBilledAt, targetReserve, replicas, podId]);
 
         await client.query('COMMIT');
     } catch (err) {
@@ -109,7 +111,7 @@ export const stopPodBilling = async (podId, isDestroying = false) => {
         const elapsedSeconds = now - app.last_billed_at;
         let effectiveHourlyRate = 0;
         if (app.status === 'running') {
-            effectiveHourlyRate += (app.hourly_rate || 0);
+            effectiveHourlyRate += (app.hourly_rate || 0) * (app.replicas || 1);
         }
         if (app.type === 'database') {
             effectiveHourlyRate += (app.storage_hourly_rate || 0);
@@ -258,8 +260,8 @@ export const runBillingLoop = async () => {
                     }
 
                     // 2. Calculate Effective Hourly Rate
-                    // Pod rate is only active if 'running'
-                    const podRate = currentApp.status === 'running' ? (currentApp.hourly_rate || 0) : 0;
+                    // Pod rate is only active if 'running', multiplied by replicas
+                    const podRate = currentApp.status === 'running' ? (currentApp.hourly_rate || 0) * (currentApp.replicas || 1) : 0;
                     // Storage rate is active for all non-deleted databases
                     const storageRate = currentApp.type === 'database' ? (currentApp.storage_hourly_rate || 0) : 0;
                     const effectiveHourlyRate = podRate + storageRate;
