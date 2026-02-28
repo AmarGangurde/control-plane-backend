@@ -55,6 +55,15 @@ export const requireAuth = async (req, res, next) => {
       }
     }
 
+    // Only log if not a pulse check or if no credentials provided at all
+    if (req.cookies?.session || req.headers.authorization) {
+      console.warn('Authentication failed: Invalid session cookie or API key', { 
+        path: req.path, 
+        hasCookie: !!req.cookies?.session,
+        hasAuthHeader: !!req.headers.authorization 
+      });
+    }
+
     return res.status(401).json({ error: 'Authentication required. Provide a valid session cookie or API key.' });
   } catch (err) {
     console.error('Auth middleware error:', err.message);

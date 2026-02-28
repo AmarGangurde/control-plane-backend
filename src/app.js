@@ -26,7 +26,7 @@ import {
 import { requireAuth } from './middleware/auth.js';
 import { requireAdminKey } from './middleware/adminAuth.js';
 import { rateLimiter } from './middleware/rateLimit.js';
-import { frontendUrl } from './config/env.js';
+import { frontendUrl, baseDomain } from './config/env.js';
 
 const app = express();
 const catchAsync = fn => (req, res, next) => {
@@ -46,11 +46,16 @@ const allowedOrigins = [
   'https://wrexer.com',
   'https://www.wrexer.com',
   'https://dev.wrexer.com',
+  baseDomain ? `https://${baseDomain}` : null,
+  baseDomain ? `https://www.${baseDomain}` : null,
+  baseDomain ? `https://dev.${baseDomain}` : null,
 ].filter(Boolean);
 
 app.use(cors({
   origin: function (origin, callback) {
     if (!origin) return callback(null, true);
+    // Allow any subdomain of baseDomain in production
+    if (baseDomain && origin.endsWith(`.${baseDomain}`)) return callback(null, true);
     if (allowedOrigins.includes(origin)) return callback(null, true);
     callback(new Error('Not allowed by CORS'));
   },

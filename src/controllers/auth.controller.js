@@ -4,6 +4,7 @@ import { createApiKeyForUser, getApiKeyInfoForUser } from '../models/apiKey.mode
 import { signJwt } from '../middleware/auth.js';
 import logger from '../utils/logger.js';
 import k8sService from '../services/k8s.service.js';
+import { baseDomain } from '../config/env.js';
 
 const isProd = process.env.NODE_ENV === 'production' || process.env.NODE_ENV === 'PROD';
 
@@ -13,7 +14,7 @@ const COOKIE_OPTIONS = {
   sameSite: 'lax',
   maxAge: 7 * 24 * 60 * 60 * 1000, // 7 days
   path: '/',
-  domain: isProd ? '.wrexer.com' : undefined, // Allow cookie to be shared across subdomains
+  domain: (isProd && baseDomain && !baseDomain.includes('localhost')) ? `.${baseDomain}` : undefined, // Allow cookie to be shared across subdomains
 };
 
 // POST /auth/google
