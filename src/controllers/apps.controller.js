@@ -72,7 +72,15 @@ export const createApp = async (req, res) => {
     const shortId = appId.split('-')[0];
     const namespace = `user-${user.id}`;
     const host = `app-${shortId}.${baseDomain}`;
-    const url = `https://${host}`;
+    // Use http for local development (localhost), https for production
+    const protocol = baseDomain === 'localhost' ? 'http' : 'https';
+    const url = `${protocol}://${host}`;
+
+    // Enforce Tiny plan restriction: exactly 1 replica
+    let finalReplicas = replicas;
+    if (plan.id === 'p-tiny') {
+      finalReplicas = 1;
+    }
 
     const resourceName = `app-${shortId}`;
 
@@ -89,13 +97,13 @@ export const createApp = async (req, res) => {
       env,
       command,
       args,
-      replicas
+      replicas: finalReplicas
     });
 
     // 2. Start billing (reserves 1 hour, sets status to 'running')
     if (plan.price_per_hour > 0) {
       try {
-        await startPodBilling(appId, user.id, plan.price_per_hour, undefined, replicas);
+        await startPodBilling(appId, user.id, plan.price_per_hour, undefined, finalReplicas);
       } catch (err) {
         await deleteAppById(appId);
         return res.status(402).json({ error: err.message });
@@ -111,9 +119,7 @@ export const createApp = async (req, res) => {
 
     // 3. Create K8s infrastructure
     try {
-      await k8sService.createNamespace(namespace);
-      await k8sService.createQuota(namespace);
-      await k8sService.createDeployment({ name: resourceName, namespace, image, containerPort, plan, env, command, args, replicas });
+      await k8sService.createDeployment({ name: resourceName, namespace, image, containerPort, plan, env, command, args, replicas: finalReplicas });
       await k8sService.createService({ name: resourceName, namespace, servicePort, containerPort });
       await k8sService.createIngress({ name: resourceName, namespace, host, port: servicePort });
     } catch (k8sErr) {
@@ -198,7 +204,12 @@ export const updateApp = async (req, res) => {
     const newEnv = env !== undefined ? env : (app.env || null);
     const newCommand = command !== undefined ? command : (app.command || null);
     const newArgs = args !== undefined ? args : (app.args || null);
-    const newReplicas = replicas !== undefined ? parseInt(replicas, 10) : (app.replicas || 1);
+    let newReplicas = replicas !== undefined ? parseInt(replicas, 10) : (app.replicas || 1);
+
+    // Enforce Tiny plan restriction
+    if (app.plan_id === 'p-tiny') {
+      newReplicas = 1;
+    }
 
     // Auto-detect port if image changed but port was not explicitly provided
     if (image && image !== app.image && port === undefined) {

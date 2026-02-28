@@ -26,8 +26,25 @@ export const withRetry = async (fn, {
             return await fn();
         } catch (err) {
             attempt++;
+
+            // 1. Try to extract code from standard K8s client error properties
+            let code = err?.body?.code || err?.response?.statusCode || err?.code;
+
+            // 2. If code missing but body is a string (common in some client versions), try to parse it
+            if (!code && typeof err?.body === 'string' && err.body.startsWith('{')) {
+                try {
+                    const parsed = JSON.parse(err.body);
+                    code = parsed.code;
+                } catch (_) { /* ignore */ }
+            }
+
+            // 3. Fallback: parse from generic error message if it looks like "HTTP-Code: 409"
+            if (!code && err.message) {
+                const match = err.message.match(/HTTP-Code:\s*(\d+)/i);
+                if (match) code = parseInt(match[1], 10);
+            }
+
             // Don't retry 404s, 409s (Conflict/Already Exists), or 400s
-            const code = err?.body?.code || err?.response?.statusCode;
             const isClientError = code && code >= 400 && code < 500 && code !== 429;
             if (attempt > retries || isClientError || !retryIf(err)) {
                 throw err;

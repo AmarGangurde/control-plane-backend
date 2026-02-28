@@ -3,6 +3,7 @@ import { createUser, getUserByEmail } from '../models/user.model.js';
 import { createApiKeyForUser, getApiKeyInfoForUser } from '../models/apiKey.model.js';
 import { signJwt } from '../middleware/auth.js';
 import logger from '../utils/logger.js';
+import k8sService from '../services/k8s.service.js';
 
 const isProd = process.env.NODE_ENV === 'production' || process.env.NODE_ENV === 'PROD';
 
@@ -47,6 +48,12 @@ export const googleSignIn = async (req, res) => {
 
     // Issue JWT and set as HttpOnly cookie
     const token = signJwt(user.id, user.email);
+
+    // [New] Ensure K8s namespace exists early
+    const namespace = `user-${user.id}`;
+    k8sService.ensureUserNamespace(namespace).catch(k8sErr => {
+      logger.error(`Early namespace initialization failed for ${user.id}`, k8sErr);
+    });
 
     res.cookie('session', token, COOKIE_OPTIONS);
 

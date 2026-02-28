@@ -37,13 +37,15 @@ class K8sService {
 
     // Optional: allow overriding the API server (e.g. when running inside a pod with
     // a kubeconfig that points to 127.0.0.1 or localhost and we need the real node IP).
-    const apiServerOverride = process.env.K8S_API_SERVER;
-    if (apiServerOverride) {
-      const cluster = kc.getCurrentCluster();
-      if (cluster) {
+    const cluster = kc.getCurrentCluster();
+    if (cluster) {
+      if (process.env.K8S_SKIP_TLS_VERIFY === 'true') {
+        cluster.skipTLSVerify = true;
+      }
+      const apiServerOverride = process.env.K8S_API_SERVER;
+      if (apiServerOverride) {
         logger.info(`Overriding K8s API server to ${apiServerOverride}`);
         cluster.server = apiServerOverride;
-        cluster.skipTLSVerify = process.env.K8S_SKIP_TLS_VERIFY === 'true';
       }
     }
 
@@ -53,8 +55,8 @@ class K8sService {
     this.net = kc.makeApiClient(k8s.NetworkingV1Api);
     this.metrics = kc.makeApiClient(k8s.CustomObjectsApi);
 
-    const cluster = kc.getCurrentCluster();
-    logger.info('K8s client initialized', { server: cluster?.server, skipTLS: cluster?.skipTLSVerify });
+    const currentCluster = kc.getCurrentCluster();
+    logger.info('K8s client initialized', { server: currentCluster?.server, skipTLS: currentCluster?.skipTLSVerify });
   }
 
   // ── Metrics ────────────────────────────────────────────────────────────────
@@ -74,13 +76,34 @@ class K8sService {
       });
 
       const items = res.items || [];
-      if (!items.length || !items[0].containers?.length) {
+      if (!items.length) {
         return { cpu: '0', memory: '0' };
       }
 
-      const usage = items[0].containers[0].usage;
-      return { cpu: usage.cpu, memory: usage.memory };
-    } catch (_err) {
+      let totalCpuNano = 0n;
+      let totalMemBytes = 0n;
+
+      for (const pod of items) {
+        for (const container of (pod.containers || [])) {
+          const usage = container.usage;
+          if (usage) {
+            totalCpuNano += this._parseCpuToNano(usage.cpu);
+            totalMemBytes += this._parseMemToBytes(usage.memory);
+          }
+        }
+      }
+
+      // Return in a format the frontend can parse easily (millicores and MiB)
+      // Using 'm' for CPU and 'Mi' for memory as standard K8s strings
+      const totalCpuMillis = Number(totalCpuNano / 1000000n);
+      const totalMemMiB = Number(totalMemBytes / (1024n * 1024n));
+
+      return {
+        cpu: `${totalCpuMillis}m`,
+        memory: `${totalMemMiB}Mi`
+      };
+    } catch (err) {
+      logger.error('Error fetching metrics', err?.message || err);
       return { cpu: '0', memory: '0' };
     }
   }
@@ -88,13 +111,25 @@ class K8sService {
   // ── Namespaces ─────────────────────────────────────────────────────────────
 
   async createNamespace(name) {
-    await withRetry(() => this.core.createNamespace({ body: { metadata: { name } } }), {
-      label: `createNamespace(${name})`,
-      retryIf: (err) => err?.body?.code !== 409,
-    }).catch(err => {
-      if (err?.body?.code === 409) return; // already exists — fine
+    try {
+      await withRetry(() => this.core.createNamespace({ body: { metadata: { name } } }), {
+        label: `createNamespace(${name})`,
+        retryIf: (err) => this._getErrorCode(err) !== 409,
+      });
+    } catch (err) {
+      if (this._getErrorCode(err) === 409) return; // already exists — fine
       throw err;
-    });
+    }
+  }
+
+  /**
+   * High-level helper to ensure a user's environment is ready.
+   * Creates namespace and quota if they don't exist.
+   */
+  async ensureUserNamespace(namespace) {
+    logger.info(`Ensuring ecosystem for ${namespace}`);
+    await this.createNamespace(namespace);
+    await this.createQuota(namespace);
   }
 
   async deleteNamespace(name) {
@@ -102,13 +137,15 @@ class K8sService {
       logger.warn('deleteNamespace called with empty name, skipping');
       return;
     }
-    await withRetry(() => this.core.deleteNamespace({ name: String(name) }), {
-      label: `deleteNamespace(${name})`,
-      retryIf: (err) => err?.body?.code !== 404,
-    }).catch(err => {
-      if (err?.body?.code === 404) return; // already gone — fine
+    try {
+      await withRetry(() => this.core.deleteNamespace({ name: String(name) }), {
+        label: `deleteNamespace(${name})`,
+        retryIf: (err) => this._getErrorCode(err) !== 404,
+      });
+    } catch (err) {
+      if (this._getErrorCode(err) === 404) return; // already gone — fine
       throw err;
-    });
+    }
   }
 
   // ── Resource Quota ─────────────────────────────────────────────────────────
@@ -122,7 +159,7 @@ class K8sService {
       },
     }), { label: `createQuota(${namespace})` })
       .catch(err => {
-        if (err?.body?.code === 409) return; // exists — fine (no update needed)
+        if (this._getErrorCode(err) === 409) return; // exists — fine (no update needed)
         throw err;
       });
   }
@@ -177,7 +214,7 @@ class K8sService {
       label: `deleteDeployment(${name})`,
       retryIf: (err) => err?.body?.code !== 404,
     }).catch(err => {
-      if (err?.body?.code === 404) return;
+      if (this._getErrorCode(err) === 404) return;
       throw err;
     });
   }
@@ -249,7 +286,7 @@ class K8sService {
       },
     }), { label: `createService(${name})` })
       .catch(err => {
-        if (err?.body?.code === 409) return;
+        if (this._getErrorCode(err) === 409) return;
         throw err;
       });
   }
@@ -267,7 +304,7 @@ class K8sService {
       },
     }), { label: `createDatabaseService(${name})` })
       .catch(err => {
-        if (err?.body?.code === 409) return null;
+        if (this._getErrorCode(err) === 409) return null;
         throw err;
       });
     return res;
@@ -278,7 +315,7 @@ class K8sService {
       label: `deleteService(${name})`,
       retryIf: (err) => err?.body?.code !== 404,
     }).catch(err => {
-      if (err?.body?.code === 404) return;
+      if (this._getErrorCode(err) === 404) return;
       throw err;
     });
   }
@@ -312,7 +349,7 @@ class K8sService {
       },
     }), { label: `createIngress(${name})` })
       .catch(err => {
-        if (err?.body?.code === 409) return;
+        if (this._getErrorCode(err) === 409) return;
         throw err;
       });
   }
@@ -322,7 +359,7 @@ class K8sService {
       label: `deleteIngress(${name})`,
       retryIf: (err) => err?.body?.code !== 404,
     }).catch(err => {
-      if (err?.body?.code === 404) return;
+      if (this._getErrorCode(err) === 404) return;
       throw err;
     });
   }
@@ -341,7 +378,7 @@ class K8sService {
       },
     }), { label: `createPVC(${name})` })
       .catch(err => {
-        if (err?.body?.code === 409) return;
+        if (this._getErrorCode(err) === 409) return;
         throw err;
       });
   }
@@ -351,7 +388,7 @@ class K8sService {
       label: `deletePVC(${name})`,
       retryIf: (err) => err?.body?.code !== 404,
     }).catch(err => {
-      if (err?.body?.code === 404) return;
+      if (this._getErrorCode(err) === 404) return;
       throw err;
     });
   }
@@ -485,6 +522,65 @@ class K8sService {
     }
 
     return podSpec;
+  }
+
+  _getErrorCode(err) {
+    // 1. Standard structure
+    let code = err?.body?.code || err?.response?.statusCode || err?.code;
+
+    // 2. Body as string
+    if (!code && typeof err?.body === 'string' && err.body.startsWith('{')) {
+      try {
+        const parsed = JSON.parse(err.body);
+        code = parsed.code;
+      } catch (_) { }
+    }
+
+    // 3. Message parsing
+    if (!code && err.message) {
+      const match = err.message.match(/HTTP-Code:\s*(\d+)/i);
+      if (match) code = parseInt(match[1], 10);
+    }
+
+    return code;
+  }
+
+  _parseCpuToNano(cpuStr) {
+    if (!cpuStr) return 0n;
+    const match = cpuStr.match(/^([0-9.]+)([a-z]*)$/i);
+    if (!match) return 0n;
+
+    const value = parseFloat(match[1]);
+    const unit = match[2];
+
+    switch (unit) {
+      case 'n': return BigInt(Math.round(value));
+      case 'u': return BigInt(Math.round(value * 1000));
+      case 'm': return BigInt(Math.round(value * 1000000));
+      case '': return BigInt(Math.round(value * 1000000000));
+      default: return 0n;
+    }
+  }
+
+  _parseMemToBytes(memStr) {
+    if (!memStr) return 0n;
+    const match = memStr.match(/^([0-9.]+)([a-z]*)$/i);
+    if (!match) return 0n;
+
+    const value = parseFloat(match[1]);
+    const unit = match[2];
+
+    const binaryUnits = {
+      'Ki': 1024n, 'Mi': 1024n ** 2n, 'Gi': 1024n ** 3n,
+      'Ti': 1024n ** 4n, 'Pi': 1024n ** 5n, 'Ei': 1024n ** 6n
+    };
+    const decimalUnits = {
+      'k': 1000n, 'm': 1000n ** 2n, 'g': 1000n ** 3n,
+      't': 1000n ** 4n, 'p': 1000n ** 5n, 'e': 1000n ** 6n
+    };
+
+    const multiplier = binaryUnits[unit] || decimalUnits[unit.toLowerCase()] || 1n;
+    return BigInt(Math.round(value)) * multiplier;
   }
 }
 

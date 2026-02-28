@@ -25,6 +25,7 @@ data/*.db
 dist/
 build/
 coverage/
+pgdata-dev/
 
 # OS & IDE
 .DS_Store

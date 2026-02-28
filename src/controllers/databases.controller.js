@@ -96,8 +96,6 @@ export const createDatabase = async (req, res) => {
 
         // 3. K8s Provisioning
         try {
-            await k8sService.createNamespace(namespace);
-            await k8sService.createQuota(namespace);
             await k8sService.createPVC({ namespace, name: pvcName, size: plan.storage });
             await k8sService.createDatabaseDeployment({ name: resourceName, namespace, plan, dbUser, dbPassword: dbPass, dbName, pvcName });
             await k8sService.createDatabaseService({ name: resourceName, namespace });
@@ -242,7 +240,7 @@ export const downloadBackup = async (req, res) => {
         // safest is to use the localhost connection since we are exec-ing inside
         const cmd = [
             'pg_dump',
-            `postgresql://${app.db_user}:${app.db_password}@localhost:5432/${app.db_name}`
+            `postgresql://${app.db_user}:${app.db_password}@127.0.0.1:5432/${app.db_name}`
         ];
 
         await k8sService.execAndStream(app.namespace, podName, 'database', cmd, res);
