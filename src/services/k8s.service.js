@@ -1,4 +1,5 @@
 import * as k8s from '@kubernetes/client-node';
+import streamModule from 'stream';
 import logger from '../utils/logger.js';
 import { withRetry } from '../utils/retry.js';
 
@@ -432,9 +433,13 @@ class K8sService {
     const items = res.items || res.body?.items || [];
     if (!items.length) return null;
 
-    // Prioritize running pods
-    const running = items.find(p => p.status.phase === 'Running');
-    return running ? running.metadata.name : items[0].metadata.name;
+    // Prioritize Running pods that are NOT terminating
+    const running = items.find(p => p.status.phase === 'Running' && !p.metadata.deletionTimestamp);
+    if (running) return running.metadata.name;
+
+    // Fallback to any Running pod, then any pod
+    const anyRunning = items.find(p => p.status.phase === 'Running');
+    return anyRunning ? anyRunning.metadata.name : items[0].metadata.name;
   }
 
   async getLogs(name, namespace) {
@@ -477,6 +482,10 @@ class K8sService {
    */
   async execAndStream(namespace, podName, containerName, commandArray, stream) {
     const exec = new k8s.Exec(this.kc);
+    const stderrStream = new streamModule.PassThrough();
+    let stderrData = '';
+    stderrStream.on('data', chunk => { stderrData += chunk; });
+
     return new Promise((resolve, reject) => {
       try {
         const req = exec.exec(
@@ -485,18 +494,18 @@ class K8sService {
           containerName,
           commandArray,
           stream,
-          process.stderr,
+          stderrStream,
           null,
           false,
           (status) => {
             if (status.status === 'Success') resolve();
-            else reject(new Error(status.message || 'Exec failed'));
+            else {
+              const msg = status.message || stderrData.trim() || 'Exec failed';
+              reject(new Error(msg));
+            }
           }
         );
 
-        // Newer versions of the library return a promise-like object or a request object.
-        // We handle the callback-based status above, which is usually correct for the websocket.
-        // If the return object is a promise (rare for exec but possible in some wrappers), don't crash.
         if (req && typeof req.catch === 'function') {
           req.catch(reject);
         }

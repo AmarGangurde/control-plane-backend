@@ -236,11 +236,14 @@ export const downloadBackup = async (req, res) => {
         res.setHeader('Content-Type', 'application/sql');
 
         // Construct pg_dump command
-        // PGPASSWORD is set via env var in the pod, but we can also pass it in the connection string
-        // safest is to use the localhost connection since we are exec-ing inside
+        // Using psql-style env vars for better reliability in some k8s exec environments
         const cmd = [
             'pg_dump',
-            `postgresql://${app.db_user}:${app.db_password}@127.0.0.1:5432/${app.db_name}`
+            '--dbname=' + `postgresql://${app.db_user}:${app.db_password}@127.0.0.1:5432/${app.db_name}`,
+            '--no-owner',
+            '--no-privileges',
+            '--clean',
+            '--if-exists'
         ];
 
         await k8sService.execAndStream(app.namespace, podName, 'database', cmd, res);
