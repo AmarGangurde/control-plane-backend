@@ -12,6 +12,7 @@ import {
 import { getPlanById } from '../models/plan.model.js';
 import { startPodBilling, stopPodBilling } from '../services/billing.service.js';
 import db from '../db/db.js';
+import { spawn } from 'child_process';
 
 const genPass = () => crypto.randomBytes(16).toString('hex');
 const genUser = () => 'u_' + crypto.randomBytes(4).toString('hex');
@@ -240,16 +241,52 @@ export const downloadBackup = async (req, res) => {
         // Percent-encoding user and password to handle special characters in production
         const encodedUser = encodeURIComponent(app.db_user);
         const encodedPass = encodeURIComponent(app.db_password);
-        const cmd = [
-            'pg_dump',
-            '--dbname=' + `postgresql://${encodedUser}:${encodedPass}@127.0.0.1:5432/${app.db_name}`,
+
+        // Use the internal k8s service hostname
+        // db-xyz.user-abc.svc.cluster.local
+        const dbHost = `${resourceName}.${app.namespace}.svc.cluster.local`;
+
+        const dumpArgs = [
+            '--dbname=' + `postgresql://${encodedUser}:${encodedPass}@${dbHost}:5432/${app.db_name}`,
             '--no-owner',
             '--no-privileges',
             '--clean',
             '--if-exists'
         ];
 
-        await k8sService.execAndStream(app.namespace, podName, 'database', cmd, res);
+        // Spawn pg_dump locally inside the backend pod
+        const pgDumpProcess = spawn('pg_dump', dumpArgs);
+
+        // Pipe stdout directly to the client response
+        pgDumpProcess.stdout.pipe(res);
+
+        let errorLog = '';
+        pgDumpProcess.stderr.on('data', (data) => {
+            errorLog += data.toString();
+        });
+
+        pgDumpProcess.on('close', (code) => {
+            if (code !== 0) {
+                logger.error('pg_dump process failed', { appId: id, code, errorLog });
+                // If headers aren't sent yet, we can send an error response.
+                if (!res.headersSent) {
+                    res.status(500).json({ error: 'Backup process failed' });
+                } else {
+                    // Headers already sent (file download started), simply end the stream
+                    logger.warn('Backup failed after streaming started');
+                    res.end();
+                }
+            } else {
+                logger.info(`Backup completed successfully for app ${id}`);
+            }
+        });
+
+        pgDumpProcess.on('error', (err) => {
+            logger.error('Failed to start pg_dump process', { appId: id, error: err.message });
+            if (!res.headersSent) {
+                res.status(500).json({ error: 'Failed to start backup process. Is pg_dump installed?' });
+            }
+        });
 
     } catch (err) {
         logger.error('Backup download failed:', {

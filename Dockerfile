@@ -9,8 +9,8 @@ COPY . .
 FROM node:20-alpine
 WORKDIR /app
 
-# Install skopeo for image port detection and libc6-compat for native modules
-RUN apk add --no-cache skopeo libc6-compat
+# Install skopeo for image port detection, libc6-compat for native modules, and postgresql-client for pg_dump backups
+RUN apk add --no-cache skopeo libc6-compat postgresql-client
 
 COPY --from=builder /app/package*.json ./
 COPY --from=builder /app/node_modules ./node_modules
