@@ -237,9 +237,12 @@ export const downloadBackup = async (req, res) => {
 
         // Construct pg_dump command
         // Using psql-style env vars for better reliability in some k8s exec environments
+        // Percent-encoding user and password to handle special characters in production
+        const encodedUser = encodeURIComponent(app.db_user);
+        const encodedPass = encodeURIComponent(app.db_password);
         const cmd = [
             'pg_dump',
-            '--dbname=' + `postgresql://${app.db_user}:${app.db_password}@127.0.0.1:5432/${app.db_name}`,
+            '--dbname=' + `postgresql://${encodedUser}:${encodedPass}@127.0.0.1:5432/${app.db_name}`,
             '--no-owner',
             '--no-privileges',
             '--clean',
