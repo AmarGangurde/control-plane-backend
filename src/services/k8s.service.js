@@ -405,7 +405,7 @@ class K8sService {
       { label: `listPods(${name})` }
     ).catch(() => ({ items: [] }));
 
-    const pods = res.items || [];
+    const pods = res.items || res.body?.items || [];
     if (!pods.length) return 'unknown';
 
     const statuses = pods.map(pod => {
@@ -429,9 +429,12 @@ class K8sService {
 
   async getPodName(name, namespace) {
     const res = await this.core.listNamespacedPod({ namespace, labelSelector: `app=${name}` });
-    const items = res.items || [];
+    const items = res.items || res.body?.items || [];
     if (!items.length) return null;
-    return items[0].metadata.name;
+
+    // Prioritize running pods
+    const running = items.find(p => p.status.phase === 'Running');
+    return running ? running.metadata.name : items[0].metadata.name;
   }
 
   async getLogs(name, namespace) {
@@ -475,20 +478,31 @@ class K8sService {
   async execAndStream(namespace, podName, containerName, commandArray, stream) {
     const exec = new k8s.Exec(this.kc);
     return new Promise((resolve, reject) => {
-      exec.exec(
-        namespace,
-        podName,
-        containerName,
-        commandArray,
-        stream,
-        process.stderr,
-        null,
-        false,
-        (status) => {
-          if (status.status === 'Success') resolve();
-          else reject(new Error(status.message));
+      try {
+        const req = exec.exec(
+          namespace,
+          podName,
+          containerName,
+          commandArray,
+          stream,
+          process.stderr,
+          null,
+          false,
+          (status) => {
+            if (status.status === 'Success') resolve();
+            else reject(new Error(status.message || 'Exec failed'));
+          }
+        );
+
+        // Newer versions of the library return a promise-like object or a request object.
+        // We handle the callback-based status above, which is usually correct for the websocket.
+        // If the return object is a promise (rare for exec but possible in some wrappers), don't crash.
+        if (req && typeof req.catch === 'function') {
+          req.catch(reject);
         }
-      ).catch(reject);
+      } catch (err) {
+        reject(err);
+      }
     });
   }
 

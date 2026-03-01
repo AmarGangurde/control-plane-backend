@@ -246,8 +246,21 @@ export const downloadBackup = async (req, res) => {
         await k8sService.execAndStream(app.namespace, podName, 'database', cmd, res);
 
     } catch (err) {
-        logger.error('Backup download failed:', err);
-        if (!res.headersSent) res.status(500).json({ error: 'Backup failed' });
+        logger.error('Backup download failed:', {
+            appId: id,
+            error: err.message,
+            stack: err.stack,
+            dbName: app?.db_name,
+            namespace: app?.namespace
+        });
+
+        if (!res.headersSent) {
+            res.status(500).json({ error: `Backup failed: ${err.message}` });
+        } else {
+            // If headers were already sent, the response is corrupted/incomplete.
+            // We can't send a JSON error now, but we've logged it.
+            logger.warn('Backup failed after headers sent - connection may hang or return partial data');
+        }
     }
 };
 
