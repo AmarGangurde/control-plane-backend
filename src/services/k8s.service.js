@@ -114,10 +114,10 @@ class K8sService {
     try {
       await withRetry(() => this.core.createNamespace({ body: { metadata: { name } } }), {
         label: `createNamespace(${name})`,
-        retryIf: (err) => this._getErrorCode(err) !== 409,
+        retryIf: (err) => Number(this._getErrorCode(err)) !== 409,
       });
     } catch (err) {
-      if (this._getErrorCode(err) === 409) return; // already exists — fine
+      if (Number(this._getErrorCode(err)) === 409) return; // already exists — fine
       throw err;
     }
   }
@@ -159,7 +159,7 @@ class K8sService {
       },
     }), { label: `createQuota(${namespace})` })
       .catch(err => {
-        if (this._getErrorCode(err) === 409) return; // exists — fine (no update needed)
+        if (Number(this._getErrorCode(err)) === 409) return; // exists — fine (no update needed)
         throw err;
       });
   }
@@ -182,7 +182,11 @@ class K8sService {
           },
         },
       },
-    }), { label: `createDeployment(${name})` });
+    }), { label: `createDeployment(${name})` })
+      .catch(err => {
+        if (Number(this._getErrorCode(err)) === 409) return;
+        throw err;
+      });
   }
 
   async updateDeployment({ name, namespace, image, containerPort, plan, env, command, args, replicas }) {
@@ -286,7 +290,7 @@ class K8sService {
       },
     }), { label: `createService(${name})` })
       .catch(err => {
-        if (this._getErrorCode(err) === 409) return;
+        if (Number(this._getErrorCode(err)) === 409) return;
         throw err;
       });
   }
@@ -349,7 +353,7 @@ class K8sService {
       },
     }), { label: `createIngress(${name})` })
       .catch(err => {
-        if (this._getErrorCode(err) === 409) return;
+        if (Number(this._getErrorCode(err)) === 409) return;
         throw err;
       });
   }
@@ -529,7 +533,7 @@ class K8sService {
     let code = err?.body?.code || err?.response?.statusCode || err?.code;
 
     // 2. Body as string
-    if (!code && typeof err?.body === 'string' && err.body.startsWith('{')) {
+    if (!code && typeof err?.body === 'string' && err.body.trim().startsWith('{')) {
       try {
         const parsed = JSON.parse(err.body);
         code = parsed.code;
@@ -542,7 +546,12 @@ class K8sService {
       if (match) code = parseInt(match[1], 10);
     }
 
-    return code;
+    // 4. Client-side body (sometimes k8s-client does this)
+    if (!code && err?.response?.body?.code) {
+      code = err.response.body.code;
+    }
+
+    return code ? Number(code) : code;
   }
 
   _parseCpuToNano(cpuStr) {

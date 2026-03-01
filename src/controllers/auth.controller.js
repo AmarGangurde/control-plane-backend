@@ -50,9 +50,9 @@ export const googleSignIn = async (req, res) => {
     // Issue JWT and set as HttpOnly cookie
     const token = signJwt(user.id, user.email);
 
-    // [New] Ensure K8s namespace exists early
+    // [New] Ensure K8s namespace exists early. Awaiting ensures the environment is ready.
     const namespace = `user-${user.id}`;
-    k8sService.ensureUserNamespace(namespace).catch(k8sErr => {
+    await k8sService.ensureUserNamespace(namespace).catch(k8sErr => {
       logger.error(`Early namespace initialization failed for ${user.id}`, k8sErr);
     });
 
@@ -74,7 +74,7 @@ export const googleSignIn = async (req, res) => {
 
 // POST /auth/logout
 export const logout = (_req, res) => {
-  res.clearCookie('session', { path: '/' });
+  res.clearCookie('session', COOKIE_OPTIONS);
   return res.status(200).json({ success: true });
 };
 

@@ -45,8 +45,11 @@ export const withRetry = async (fn, {
             }
 
             // Don't retry 404s, 409s (Conflict/Already Exists), or 400s
+            // Unless retryIf explicitly allows it
             const isClientError = code && code >= 400 && code < 500 && code !== 429;
-            if (attempt > retries || isClientError || !retryIf(err)) {
+            const shouldRetry = retryIf(err);
+
+            if (attempt > retries || (isClientError && !shouldRetry) || !shouldRetry) {
                 throw err;
             }
             logger.warn(`${label} failed (attempt ${attempt}/${retries}), retrying in ${delay}ms`, {
