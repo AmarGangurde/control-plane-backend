@@ -66,7 +66,7 @@ export const createDatabase = async (req, res) => {
         const dbName = genDb();
 
         const storageGB = parseInt(plan.storage.replace('Gi', '')) || 0;
-        const storageRate = storageGB * 2; // 2 paise per GB per hour
+        const storageRate = storageGB * 3; // 3 paise per GB per hour (updated from 2)
         const combinedRate = plan.price_per_hour + storageRate;
 
         // 1. Insert DB record

@@ -153,9 +153,9 @@ const initDb = async (retries = 5) => {
 
         // Managed Database Plans (Pod price = App Plan * 1.6, Storage = 2 paise/GB)
 
-        await client.query(upsertPlan, ['db-small', 'DB Small', '500m', '150m', '1024Mi', '768Mi', 62, '5Gi']);
-        await client.query(upsertPlan, ['db-medium', 'DB Medium', '1000m', '300m', '2048Mi', '1536Mi', 110, '10Gi']);
-        await client.query(upsertPlan, ['db-large', 'DB Large', '2000m', '600m', '4096Mi', '3072Mi', 210, '20Gi']);
+        await client.query(upsertPlan, ['db-small', 'DB Small', '500m', '150m', '1024Mi', '768Mi', 47, '5Gi']);
+        await client.query(upsertPlan, ['db-medium', 'DB Medium', '1000m', '300m', '2048Mi', '1536Mi', 80, '10Gi']);
+        await client.query(upsertPlan, ['db-large', 'DB Large', '2000m', '600m', '4096Mi', '3072Mi', 150, '20Gi']);
 
         // Add runtime column if missing 
         await client.query(`
@@ -166,9 +166,9 @@ const initDb = async (retries = 5) => {
     `);
 
         // Kata Container plans (Coming Soon)
-        await client.query(upsertPlan, ['p-kata-small', 'Kata Small', '250m', '80m', '256Mi', '160Mi', 34, null]);
-        await client.query(upsertPlan, ['p-kata-medium', 'Kata Medium', '1000m', '300m', '1024Mi', '640Mi', 104, null]);
-        await client.query(upsertPlan, ['p-kata-large', 'Kata Large', '2000m', '600m', '2048Mi', '1280Mi', 208, null]);
+        await client.query(upsertPlan, ['p-kata-small', 'Kata Small', '1000m', '250m', '512Mi', '256Mi', 34, null]);
+        await client.query(upsertPlan, ['p-kata-medium', 'Kata Medium', '2000m', '500m', '1024Mi', '512Mi', 104, null]);
+        await client.query(upsertPlan, ['p-kata-large', 'Kata Large', '4000m', '1000m', '2048Mi', '1024Mi', 208, null]);
         await client.query(`UPDATE plans SET runtime = 'kata' WHERE id IN ('p-kata-small', 'p-kata-medium', 'p-kata-large')`);
 
         // No migration needed for existing apps as per user request
