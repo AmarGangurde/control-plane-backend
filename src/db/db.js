@@ -144,18 +144,18 @@ const initDb = async (retries = 5) => {
         price_per_hour = EXCLUDED.price_per_hour,
         storage = EXCLUDED.storage
     `;
-        await client.query(upsertPlan, ['p-tiny', 'Tiny (Free)', '25m', '3m', '64Mi', '10Mi', 0, null]);
-        await client.query(upsertPlan, ['p-small', 'Small', '100m', '10m', '128Mi', '20Mi', 14, null]);
-        await client.query(upsertPlan, ['p-basic', 'Basic', '250m', '25m', '256Mi', '38Mi', 25, null]);
-        await client.query(upsertPlan, ['p-medium', 'Medium', '500m', '50m', '512Mi', '77Mi', 35, null]);
-        await client.query(upsertPlan, ['p-large', 'Large', '1000m', '100m', '1024Mi', '154Mi', 69, null]);
-        await client.query(upsertPlan, ['p-xlarge', 'XLarge', '2000m', '200m', '2048Mi', '307Mi', 139, null]);
+        await client.query(upsertPlan, ['p-tiny', 'Tiny (Free)', '100m', '15m', '128Mi', '64Mi', 0, null]);
+        await client.query(upsertPlan, ['p-small', 'Small', '250m', '35m', '256Mi', '128Mi', 20, null]);
+        await client.query(upsertPlan, ['p-basic', 'Basic', '500m', '70m', '512Mi', '256Mi', 39, null]);
+        await client.query(upsertPlan, ['p-medium', 'Medium', '1000m', '140m', '1024Mi', '512Mi', 76, null]);
+        await client.query(upsertPlan, ['p-large', 'Large', '2000m', '285m', '2048Mi', '1024Mi', 145, null]);
+        await client.query(upsertPlan, ['p-xlarge', 'XLarge', '4000m', '570m', '4096Mi', '2048Mi', 275, null]);
 
         // Managed Database Plans (Pod price = App Plan * 1.6, Storage = 2 paise/GB)
 
-        await client.query(upsertPlan, ['db-small', 'DB Small', '250m', '50m', '512Mi', '128Mi', 40, '5Gi']);
-        await client.query(upsertPlan, ['db-medium', 'DB Medium', '500m', '100m', '512Mi', '256Mi', 56, '10Gi']);
-        await client.query(upsertPlan, ['db-large', 'DB Large', '700m', '200m', '1024Mi', '512Mi', 75, '20Gi']);
+        await client.query(upsertPlan, ['db-small', 'DB Small', '500m', '150m', '1024Mi', '768Mi', 62, '5Gi']);
+        await client.query(upsertPlan, ['db-medium', 'DB Medium', '1000m', '300m', '2048Mi', '1536Mi', 110, '10Gi']);
+        await client.query(upsertPlan, ['db-large', 'DB Large', '2000m', '600m', '4096Mi', '3072Mi', 210, '20Gi']);
 
         // Add runtime column if missing 
         await client.query(`
@@ -166,9 +166,9 @@ const initDb = async (retries = 5) => {
     `);
 
         // Kata Container plans (Coming Soon)
-        await client.query(upsertPlan, ['p-kata-small', 'Kata Small', '100m', '20m', '128Mi', '32Mi', 28, null]);
-        await client.query(upsertPlan, ['p-kata-medium', 'Kata Medium', '500m', '100m', '512Mi', '128Mi', 69, null]);
-        await client.query(upsertPlan, ['p-kata-large', 'Kata Large', '1000m', '200m', '1024Mi', '256Mi', 139, null]);
+        await client.query(upsertPlan, ['p-kata-small', 'Kata Small', '250m', '80m', '256Mi', '160Mi', 34, null]);
+        await client.query(upsertPlan, ['p-kata-medium', 'Kata Medium', '1000m', '300m', '1024Mi', '640Mi', 104, null]);
+        await client.query(upsertPlan, ['p-kata-large', 'Kata Large', '2000m', '600m', '2048Mi', '1280Mi', 208, null]);
         await client.query(`UPDATE plans SET runtime = 'kata' WHERE id IN ('p-kata-small', 'p-kata-medium', 'p-kata-large')`);
 
         // No migration needed for existing apps as per user request
