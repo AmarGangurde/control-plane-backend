@@ -50,7 +50,9 @@ export const createDatabase = async (req, res) => {
         }
 
         if (plan.price_per_hour > 0 && user.balance < plan.price_per_hour) {
-            return res.status(402).json({ error: 'Insufficient balance' });
+            return res.status(402).json({
+                error: `insufficient balance. ${plan.name} plan requires at least ₹${(plan.price_per_hour / 100).toFixed(2)} (1 hour reserve) to start`
+            });
         }
 
         const appId = uuidv4();
@@ -182,7 +184,9 @@ export const startDatabase = async (req, res) => {
     const combinedRate = plan.price_per_hour + (app.storage_hourly_rate || 0);
 
     if (combinedRate > 0 && req.user.balance < combinedRate) {
-        return res.status(402).json({ error: 'Insufficient balance' });
+        return res.status(402).json({
+            error: `insufficient balance. ${plan.name} plan requires at least ₹${(combinedRate / 100).toFixed(2)} (1 hour reserve) to start`
+        });
     }
 
     const shortId = app.id.split('-')[0];

@@ -51,7 +51,7 @@ export const createApp = async (req, res) => {
     // Billing check (delegated to startPodBilling later, but good for early exit)
     if (plan.price_per_hour > 0 && user.balance < plan.price_per_hour) {
       return res.status(402).json({
-        error: `insufficient balance. ${plan.name} plan requires at least ₹${plan.price_per_hour} (1 hour reserve) to start`
+        error: `insufficient balance. ${plan.name} plan requires at least ₹${(plan.price_per_hour / 100).toFixed(2)} (1 hour reserve) to start`
       });
     }
 
