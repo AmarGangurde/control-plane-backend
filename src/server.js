@@ -1,6 +1,6 @@
 import 'dotenv/config';
 import app from './app.js';
-import { startBillingCron } from './services/billing.service.js';
+import { startBillingCron, startPaymentVerificationCron } from './services/billing.service.js';
 import db from './db/db.js';
 import logger from './utils/logger.js';
 
@@ -13,6 +13,9 @@ const start = async () => {
 
   // Start billing loop
   startBillingCron();
+
+  // Start background payment verification
+  startPaymentVerificationCron();
 
   app.listen(PORT, () => {
     logger.info(`Server listening on port ${PORT}`);

@@ -2,6 +2,7 @@ import db from '../db/db.js';
 import logger from '../utils/logger.js';
 import { killAppCompletely } from './app.service.js';
 import { v4 as uuidv4 } from 'uuid';
+import cashfreeService from './cashfree.service.js';
 
 /**
  * Starts billing for a pod.
@@ -401,4 +402,88 @@ export const startBillingCron = () => {
     setInterval(() => {
         runBillingLoop().catch(err => logger.error('Billing loop error:', err));
     }, 10000);
+};
+
+/**
+ * Background Payment Verification Loop
+ * Checks for pending topup transactions and verifies them with Cashfree.
+ * Runs every 1 minute.
+ */
+export const runPaymentVerificationLoop = async () => {
+    const lockClient = await db.getClient();
+    let lockAcquired = false;
+
+    try {
+        const { rows: lockRows } = await lockClient.query('SELECT pg_try_advisory_lock(1002) as locked');
+        lockAcquired = lockRows[0].locked;
+
+        if (!lockAcquired) return;
+
+        // Find pending topup transactions created in the last 30 minutes
+        const { rows: pendingTxns } = await lockClient.query(`
+            SELECT external_id FROM transactions 
+            WHERE status = 'pending' 
+            AND type = 'topup'
+            AND created_at > NOW() - INTERVAL '30 minutes'
+            LIMIT 20
+        `);
+
+        for (const txn of pendingTxns) {
+            const order_id = txn.external_id;
+            try {
+                const orderData = await cashfreeService.verifyOrder(order_id);
+                if (orderData.order_status === 'PAID') {
+                    const client = await db.getClient();
+                    try {
+                        await client.query('BEGIN');
+                        const updateResult = await client.query(
+                            "UPDATE transactions SET status = 'success' WHERE external_id = $1 AND status = 'pending'",
+                            [order_id]
+                        );
+
+                        if (updateResult.rowCount > 0) {
+                            const { rows } = await client.query(
+                                'SELECT * FROM transactions WHERE external_id = $1',
+                                [order_id]
+                            );
+                            const transaction = rows[0];
+                            await client.query(
+                                'UPDATE users SET balance = balance + $1 WHERE id = $2',
+                                [Math.abs(transaction.amount), transaction.user_id]
+                            );
+                            logger.info(`Background payment verification successful for transaction ${order_id}`);
+                        }
+                        await client.query('COMMIT');
+                    } catch (err) {
+                        await client.query('ROLLBACK');
+                        throw err;
+                    } finally {
+                        client.release();
+                    }
+                } else if (['FAILED', 'CANCELLED', 'EXPIRED'].includes(orderData.order_status)) {
+                    await db.query(
+                        "UPDATE transactions SET status = $1 WHERE external_id = $2 AND status = 'pending'",
+                        [orderData.order_status.toLowerCase(), order_id]
+                    );
+                    logger.info(`Background payment verification: Transaction ${order_id} marked as ${orderData.order_status}`);
+                }
+            } catch (err) {
+                logger.error(`Error verifying order ${order_id} in background:`, err.message);
+            }
+        }
+    } catch (err) {
+        logger.error('Payment verification loop error:', err);
+    } finally {
+        if (lockAcquired) {
+            await lockClient.query('SELECT pg_advisory_unlock(1002)');
+        }
+        lockClient.release();
+    }
+};
+
+export const startPaymentVerificationCron = () => {
+    logger.info('Starting per-minute payment verification cycle...');
+    setInterval(() => {
+        runPaymentVerificationLoop().catch(err => logger.error('Payment verification loop error:', err));
+    }, 60000); // Once per minute
 };
