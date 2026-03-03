@@ -71,7 +71,7 @@ export const createApp = async (req, res) => {
     const appId = uuidv4();
     const shortId = appId.split('-')[0];
     const namespace = `user-${user.id}`;
-    const host = `app-${shortId}.${baseDomain}`;
+    const host = `${sanitizedName}-${shortId}.${baseDomain}`;
     // Use http for local development (localhost), https for production
     const protocol = baseDomain === 'localhost' ? 'http' : 'https';
     const url = `${protocol}://${host}`;
