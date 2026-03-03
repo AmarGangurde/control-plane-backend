@@ -136,8 +136,29 @@ export const createApp = async (req, res) => {
 };
 
 export const listApps = async (req, res) => {
-  const apps = await listAppsByUserId(req.user.id);
-  res.json(apps);
+  try {
+    const apps = await listAppsByUserId(req.user.id, 'app');
+
+    // Sync status with k8s for each app to ensure dashboard accuracy
+    const syncedApps = await Promise.all(apps.map(async (app) => {
+      const shortId = app.id.split('-')[0];
+      const resourceName = `app-${shortId}`;
+
+      // Get real-time status from k8s
+      const currentStatus = await k8sService.getAppStatus(resourceName, app.namespace);
+
+      // If DB says stopped but k8s says unknown/missing, keep it as stopped
+      if (currentStatus === 'unknown' && app.status === 'stopped') {
+        return app;
+      }
+
+      return { ...app, status: currentStatus || app.status };
+    }));
+
+    res.json(syncedApps);
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
 };
 
 export const getApp = async (req, res) => {

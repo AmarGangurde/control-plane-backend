@@ -129,13 +129,35 @@ export const createDatabase = async (req, res) => {
 };
 
 export const listDatabases = async (req, res) => {
-    const dbs = await listAppsByUserId(req.user.id, 'database');
-    const masked = dbs.map(db => ({
-        ...db,
-        url: maskUrl(db.url),
-        db_password: '••••••••'
-    }));
-    res.json(masked);
+    try {
+        const dbs = await listAppsByUserId(req.user.id, 'database');
+
+        // Sync status with k8s for each database
+        const syncedDbs = await Promise.all(dbs.map(async (db) => {
+            const shortId = db.id.split('-')[0];
+            const resourceName = `db-${shortId}`;
+
+            // Get real-time status from k8s
+            const currentStatus = await k8sService.getAppStatus(resourceName, db.namespace);
+
+            // If DB says stopped but k8s says unknown/missing, keep it as stopped
+            let status = currentStatus;
+            if (currentStatus === 'unknown' && db.status === 'stopped') {
+                status = 'stopped';
+            }
+
+            return {
+                ...db,
+                url: maskUrl(db.url),
+                db_password: '••••••••',
+                status: status || db.status
+            };
+        }));
+
+        res.json(syncedDbs);
+    } catch (err) {
+        res.status(500).json({ error: err.message });
+    }
 };
 
 export const getDatabase = async (req, res) => {
