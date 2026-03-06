@@ -398,6 +398,57 @@ class K8sService {
     });
   }
 
+  // ── Registry Secrets ───────────────────────────────────────────────────────
+
+  /**
+   * Syncs a user's Docker registry credentials to a K8s secret in their namespace.
+   * Named 'user-registry-key' to avoid conflicts with system 'regcred'.
+   */
+  async syncUserRegistrySecret(namespace, username, token) {
+    if (!username || !token) {
+      logger.info(`No docker credentials to sync for ${namespace}, skipping secret creation`);
+      return;
+    }
+
+    const auth = Buffer.from(`${username}:${token}`).toString('base64');
+    const dockerConfig = {
+      auths: {
+        'https://index.docker.io/v1/': {
+          username,
+          password: token,
+          auth,
+        },
+      },
+    };
+
+    const secretName = 'user-registry-key';
+    const body = {
+      metadata: { name: secretName },
+      type: 'kubernetes.io/dockerconfigjson',
+      data: {
+        '.dockerconfigjson': Buffer.from(JSON.stringify(dockerConfig)).toString('base64'),
+      },
+    };
+
+    try {
+      await withRetry(() => this.core.createNamespacedSecret({ namespace, body }), {
+        label: `createSecret(${secretName}, ${namespace})`,
+        retryIf: (err) => Number(this._getErrorCode(err)) !== 409,
+      });
+      logger.info(`Created registry secret ${secretName} in ${namespace}`);
+    } catch (err) {
+      if (Number(this._getErrorCode(err)) === 409) {
+        // Update existing
+        await withRetry(() => this.core.replaceNamespacedSecret({ name: secretName, namespace, body }), {
+          label: `replaceSecret(${secretName}, ${namespace})`,
+        });
+        logger.info(`Updated registry secret ${secretName} in ${namespace}`);
+      } else {
+        throw err;
+      }
+    }
+  }
+
   // ── Pod helpers ────────────────────────────────────────────────────────────
 
   async getAppStatus(name, namespace) {
@@ -539,7 +590,10 @@ class K8sService {
     if (args && Array.isArray(args)) container.args = args;
 
     const podSpec = {
-      imagePullSecrets: [{ name: 'regcred' }],
+      imagePullSecrets: [
+        { name: 'regcred' },           // System GHCR secret
+        { name: 'user-registry-key' } // User-provided Docker Hub secret (if exists)
+      ],
       containers: [container],
     };
 

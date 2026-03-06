@@ -35,6 +35,9 @@ const initDb = async (retries = 5) => {
         email TEXT UNIQUE,
         balance INTEGER DEFAULT 0,
         reserved_balance INTEGER DEFAULT 0,
+        docker_username TEXT,
+        docker_token TEXT,
+        github_id TEXT UNIQUE,
         created_at TIMESTAMPTZ DEFAULT NOW()
       )
     `);
@@ -127,6 +130,9 @@ const initDb = async (retries = 5) => {
         ALTER TABLE apps ADD COLUMN IF NOT EXISTS db_name TEXT;
         ALTER TABLE apps ADD COLUMN IF NOT EXISTS storage_hourly_rate INTEGER DEFAULT 0;
         ALTER TABLE apps ADD COLUMN IF NOT EXISTS replicas INTEGER DEFAULT 1;
+        ALTER TABLE users ADD COLUMN IF NOT EXISTS docker_username TEXT;
+        ALTER TABLE users ADD COLUMN IF NOT EXISTS docker_token TEXT;
+        ALTER TABLE users ADD COLUMN IF NOT EXISTS github_id TEXT UNIQUE;
       EXCEPTION WHEN duplicate_column THEN NULL;
       END $$;
     `);
