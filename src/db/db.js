@@ -117,6 +117,54 @@ const initDb = async (retries = 5) => {
       )
     `);
 
+        // Contact Messages
+        await client.query(`
+          CREATE TABLE IF NOT EXISTS contact_messages (
+            id TEXT PRIMARY KEY,
+            name TEXT NOT NULL,
+            email TEXT NOT NULL,
+            subject TEXT,
+            message TEXT NOT NULL,
+            status TEXT DEFAULT 'new',
+            ip_address TEXT,
+            user_agent TEXT,
+            created_at TIMESTAMPTZ DEFAULT NOW(),
+            resolved_at TIMESTAMPTZ
+          )
+        `);
+
+        // Support Tickets
+        await client.query(`
+          CREATE TABLE IF NOT EXISTS tickets (
+            id TEXT PRIMARY KEY,
+            user_id TEXT REFERENCES users(id) ON DELETE CASCADE,
+            subject TEXT NOT NULL,
+            status TEXT DEFAULT 'open',
+            priority TEXT DEFAULT 'normal',
+            assigned_admin TEXT,
+            created_at TIMESTAMPTZ DEFAULT NOW(),
+            updated_at TIMESTAMPTZ DEFAULT NOW(),
+            closed_at TIMESTAMPTZ
+          )
+        `);
+
+        // Ticket Messages
+        await client.query(`
+          CREATE TABLE IF NOT EXISTS ticket_messages (
+            id TEXT PRIMARY KEY,
+            ticket_id TEXT REFERENCES tickets(id) ON DELETE CASCADE,
+            sender_type TEXT NOT NULL,
+            sender_id TEXT,
+            message TEXT NOT NULL,
+            created_at TIMESTAMPTZ DEFAULT NOW()
+          )
+        `);
+
+        // Indexes
+        await client.query(`CREATE INDEX IF NOT EXISTS idx_contacts_created ON contact_messages(created_at DESC)`);
+        await client.query(`CREATE INDEX IF NOT EXISTS idx_tickets_user ON tickets(user_id)`);
+        await client.query(`CREATE INDEX IF NOT EXISTS idx_ticket_messages_ticket ON ticket_messages(ticket_id)`);
+
         // Add missing columns to existing tables (for safe migrations)
         await client.query(`
       DO $$ BEGIN

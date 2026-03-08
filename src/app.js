@@ -28,6 +28,10 @@ import { requireAdminKey } from './middleware/adminAuth.js';
 import { rateLimiter } from './middleware/rateLimit.js';
 import { frontendUrl, baseDomain } from './config/env.js';
 
+import contactRoutes from './routes/contact.routes.js';
+import ticketRoutes from './routes/tickets.routes.js';
+import adminSupportRoutes from './routes/admin.support.routes.js';
+
 const app = express();
 const catchAsync = fn => (req, res, next) => {
   Promise.resolve(fn(req, res, next)).catch(next);
@@ -101,6 +105,11 @@ api.delete('/databases/:id', requireAuth, catchAsync(destroyDatabase));
 
 // Admin routes
 api.get('/admin/keys', requireAdminKey, listApiKeys);
+
+// Support & Contact routes
+api.use('/contact', contactRoutes);
+api.use('/tickets', ticketRoutes);
+api.use('/admin', adminSupportRoutes);
 
 // Mount everything under /api
 app.use('/api', api);
