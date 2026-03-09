@@ -3,6 +3,9 @@ import logger from '../utils/logger.js';
 import { killAppCompletely } from './app.service.js';
 import { v4 as uuidv4 } from 'uuid';
 import cashfreeService from './cashfree.service.js';
+import * as emailService from './email.service.js';
+import k8sService from './k8s.service.js';
+
 
 /**
  * Starts billing for a pod.
@@ -310,20 +313,48 @@ export const runBillingLoop = async () => {
                             if (uRows.length > 0) userBalance = uRows[0].balance;
 
                             if (userBalance < overflow) {
-                                // INSUFFICIENT FUNDS for the *past* interval
                                 if (currentApp.status === 'running') {
+                                    // Running app — kill immediately
                                     logger.info(`Insufficient funds for running app ${currentApp.id}. Killing.`);
                                     shouldKill = true;
-                                } else {
-                                    logger.warn(`Storage Grace Period (Debt): User ${currentApp.user_id} DB ${currentApp.id} skipped billing.`);
+                                } else if (currentApp.type === 'database') {
+                                    // Stopped database — start/check 3-day grace period
+                                    const GRACE_DAYS = 3;
+                                    const now3 = new Date();
+
+                                    if (!currentApp.grace_started_at) {
+                                        // First time — start the grace clock
+                                        const deleteDate = new Date(now3.getTime() + GRACE_DAYS * 86400 * 1000);
+                                        await client.query(
+                                            'UPDATE apps SET grace_started_at = $1 WHERE id = $2',
+                                            [now3, currentApp.id]
+                                        );
+                                        logger.warn(`DB ${currentApp.id} entered 3-day grace period. Delete after ${deleteDate.toISOString()}`);
+                                        emailService.emailDatabaseGraceStarted(currentApp.user_id, currentApp.name, deleteDate).catch(() => { });
+                                    } else {
+                                        // Grace already started — check if expired
+                                        const graceStart = new Date(currentApp.grace_started_at);
+                                        const daysPassed = (now3 - graceStart) / 86400000;
+                                        if (daysPassed >= GRACE_DAYS) {
+                                            // 3 days up — destroy the database
+                                            logger.warn(`DB ${currentApp.id} grace period expired after ${daysPassed.toFixed(1)} days. Destroying.`);
+                                            await client.query('COMMIT');
+                                            client.release();
+                                            const { rows: fullAppRows } = await db.query('SELECT * FROM apps WHERE id = $1', [currentApp.id]);
+                                            if (fullAppRows[0]) {
+                                                await stopPodBilling(currentApp.id, true).catch(() => { });
+                                                const shortId = currentApp.id.split('-')[0];
+                                                await k8sService.deleteNamespacedDeployment(`db-${shortId}`, currentApp.namespace).catch(() => { });
+                                                await k8sService.deleteNamespacedService(`db-${shortId}`, currentApp.namespace).catch(() => { });
+                                                await k8sService.deleteNamespacedPVC(`data-db-${shortId}`, currentApp.namespace).catch(() => { });
+                                                await db.query("UPDATE apps SET status = 'deleted', grace_started_at = NULL WHERE id = $1", [currentApp.id]);
+                                                emailService.emailDatabaseDestroyed(currentApp.user_id, currentApp.name).catch(() => { });
+                                            }
+                                            continue;
+                                        }
+                                    }
                                 }
                                 await client.query('COMMIT');
-                                if (shouldKill) {
-                                    try {
-                                        const { rows: fullAppRows } = await db.query('SELECT * FROM apps WHERE id = $1', [currentApp.id]);
-                                        if (fullAppRows[0]) await killAppCompletely(fullAppRows[0]);
-                                    } catch (kErr) { logger.error('Error killing app:', kErr); }
-                                }
                                 continue;
                             }
 
@@ -381,6 +412,8 @@ export const runBillingLoop = async () => {
                     const fullApp = rows[0];
                     if (fullApp) {
                         await killAppCompletely(fullApp);
+                        // Email user — non-fatal
+                        emailService.emailAppKilledLowBalance(fullApp.user_id, fullApp.name, fullApp.url).catch(() => { });
                     }
                 }
             } catch (err) {
@@ -394,6 +427,71 @@ export const runBillingLoop = async () => {
             await lockClient.query('SELECT pg_advisory_unlock(1001)');
         }
         lockClient.release();
+    }
+};
+
+export const resumeGracePeriodDatabases = async (userId) => {
+    // Called after a successful topup — restart any stopped DBs in grace period
+    const { rows: graceDbs } = await db.query(
+        `SELECT * FROM apps WHERE user_id = $1 AND type = 'database' AND grace_started_at IS NOT NULL AND status = 'stopped'`,
+        [userId]
+    );
+    if (graceDbs.length === 0) return;
+
+    const { rows: uRows } = await db.query('SELECT balance FROM users WHERE id = $1', [userId]);
+    let userBalance = uRows[0]?.balance || 0;
+
+    for (const app of graceDbs) {
+        try {
+            // Calculate storage debt since grace started
+            const graceStart = new Date(app.grace_started_at);
+            const hoursInGrace = (Date.now() - graceStart.getTime()) / 3600000;
+            const debtPaise = Math.floor((app.storage_hourly_rate || 0) * hoursInGrace);
+
+            if (debtPaise > 0 && userBalance < debtPaise) {
+                logger.warn(`resumeGrace: user ${userId} can't cover debt ${debtPaise} for DB ${app.id} — skipping`);
+                continue; // still not enough balance for this DB
+            }
+
+            // Charge the accrued debt
+            if (debtPaise > 0) {
+                await db.query('UPDATE users SET balance = balance - $1 WHERE id = $2', [debtPaise, userId]);
+                userBalance -= debtPaise;
+                await db.query(
+                    `INSERT INTO transactions (id, user_id, amount, type, status, external_id, metadata)
+                     VALUES ($1, $2, $3, 'pod_burn_receipt', 'success', $4, $5)`,
+                    [uuidv4(), userId, -debtPaise, `Grace-debt: ${app.name}`, JSON.stringify({ type: 'database', graceHours: hoursInGrace.toFixed(1) })]
+                );
+            }
+
+            // Clear grace, reset last_billed_at
+            await db.query(
+                `UPDATE apps SET grace_started_at = NULL, last_billed_at = $1, status = 'stopped' WHERE id = $2`,
+                [Math.floor(Date.now() / 1000), app.id]
+            );
+
+            // Resume pod on k8s
+            const { getPlanById } = await import('../models/plan.model.js');
+            const plan = await getPlanById(app.plan_id);
+            const shortId = app.id.split('-')[0];
+            const pvcName = `data-db-${shortId}`;
+            await k8sService.createDatabaseDeployment({
+                name: `db-${shortId}`,
+                namespace: app.namespace,
+                plan,
+                dbUser: app.db_user,
+                dbPassword: app.db_password,
+                dbName: app.db_name,
+                pvcName
+            }).catch(err => logger.warn(`resumeGrace: k8s redeploy failed for DB ${app.id}: ${err.message}`));
+            await k8sService.createDatabaseService({ name: `db-${shortId}`, namespace: app.namespace }).catch(() => { });
+            await db.query(`UPDATE apps SET status = 'running' WHERE id = $1`, [app.id]);
+
+            logger.info(`resumeGrace: DB ${app.id} resumed. Charged ₹${(debtPaise / 100).toFixed(2)} debt.`);
+            emailService.emailDatabaseResumed(userId, app.name, debtPaise / 100).catch(() => { });
+        } catch (err) {
+            logger.error(`resumeGrace: error resuming DB ${app.id}: ${err.message}`);
+        }
     }
 };
 
@@ -447,11 +545,14 @@ export const runPaymentVerificationLoop = async () => {
                                 [order_id]
                             );
                             const transaction = rows[0];
+                            const bgAmountPaise = Math.abs(transaction.amount);
                             await client.query(
                                 'UPDATE users SET balance = balance + $1 WHERE id = $2',
-                                [Math.abs(transaction.amount), transaction.user_id]
+                                [bgAmountPaise, transaction.user_id]
                             );
                             logger.info(`Background payment verification successful for transaction ${order_id}`);
+                            emailService.emailTopupConfirmed(transaction.user_id, (bgAmountPaise / 100).toFixed(0)).catch(() => { });
+                            resumeGracePeriodDatabases(transaction.user_id).catch(() => { });
                         }
                         await client.query('COMMIT');
                     } catch (err) {

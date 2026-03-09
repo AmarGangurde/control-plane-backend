@@ -199,6 +199,7 @@ const initDb = async (retries = 5) => {
         ALTER TABLE users ADD COLUMN IF NOT EXISTS docker_token TEXT;
         ALTER TABLE users ADD COLUMN IF NOT EXISTS github_id TEXT UNIQUE;
         ALTER TABLE apps ADD COLUMN IF NOT EXISTS alias TEXT;
+        ALTER TABLE apps ADD COLUMN IF NOT EXISTS grace_started_at TIMESTAMPTZ;
       EXCEPTION WHEN duplicate_column THEN NULL;
       END $$;
     `);

@@ -3,6 +3,7 @@ import db from '../db/db.js';
 import k8sService from '../services/k8s.service.js';
 import { baseDomain } from '../config/env.js';
 import logger from '../utils/logger.js';
+import * as emailService from '../services/email.service.js';
 
 // ── Constants ──────────────────────────────────────────────────────────────────
 export const RESERVED_ALIAS_PRICE = 2900; // ₹29.00 in paise
@@ -222,12 +223,16 @@ export const runReservedAliasBillingLoop = async () => {
                     // Can't renew — expire the alias and remove from ingress
                     logger.warn(`Reserved alias ${ra.slug} expired for user ${ra.user_id} (insufficient balance)`);
                     await client.query(`UPDATE reserved_aliases SET status = 'expired' WHERE id = $1`, [ra.id]);
+                    // Clear apps.alias so AppList reflects the loss
+                    if (ra.assigned_app_id) {
+                        await client.query(`UPDATE apps SET alias = NULL WHERE id = $1`, [ra.assigned_app_id]);
+                    }
                     await client.query('COMMIT');
-
                     // Remove from Ingress (non-fatal)
                     if (ra.assigned_app_id) {
                         await _removeAliasFromIngress(ra.assigned_app_id, ra.slug).catch(() => { });
                     }
+                    emailService.emailAliasExpired(ra.user_id, ra.slug).catch(() => { });
                     continue;
                 }
 
@@ -260,6 +265,21 @@ export const runReservedAliasBillingLoop = async () => {
     } finally {
         if (lockAcquired) await lockClient.query('SELECT pg_advisory_unlock(1003)');
         lockClient.release();
+    }
+
+    // 5-day expiry warning (separate scan, non-transactional, non-fatal)
+    try {
+        const in5 = new Date(Date.now() + 5 * 86400 * 1000);
+        const { rows: expiring } = await db.query(
+            `SELECT * FROM reserved_aliases WHERE status = 'active' AND expires_at <= $1 AND expires_at > NOW()`,
+            [in5]
+        );
+        for (const ra of expiring) {
+            const daysLeft = Math.ceil((new Date(ra.expires_at) - Date.now()) / 86400000);
+            emailService.emailAliasExpiringSoon(ra.user_id, ra.slug, daysLeft, ra.expires_at).catch(() => { });
+        }
+    } catch (e) {
+        logger.warn('Error sending alias expiry warnings:', e.message);
     }
 };
 

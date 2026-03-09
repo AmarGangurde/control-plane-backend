@@ -1,6 +1,6 @@
 {
   "name": "control-plane-backend",
-  "version": "0.3.6",
+  "version": "0.3.7",
   "description": "Kubernetes-backed PaaS control plane",
   "main": "src/server.js",
   "type": "module",
@@ -21,6 +21,7 @@
     "jsonwebtoken": "^9.0.3",
     "nanoid": "^5.1.6",
     "node-fetch": "^3.3.2",
+    "nodemailer": "^8.0.2",
     "pg": "^8.18.0",
     "rate-limit-redis": "^4.3.1",
     "socket.io": "^4.8.3",

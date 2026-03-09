@@ -5,6 +5,8 @@ import db from '../db/db.js';
 import { v4 as uuidv4 } from 'uuid';
 import { frontendUrl, apiBase, cashfree } from '../config/env.js';
 import logger from '../utils/logger.js';
+import * as emailService from '../services/email.service.js';
+import { resumeGracePeriodDatabases } from '../services/billing.service.js';
 
 export const listPlans = async (req, res) => {
     const plans = await getPlans();
@@ -92,11 +94,15 @@ export const handleWebhook = async (req, res) => {
                         [order_id]
                     );
                     const transaction = rows[0];
+                    const amountPaise = Math.abs(transaction.amount);
                     await client.query(
                         'UPDATE users SET balance = balance + $1 WHERE id = $2',
-                        [Math.abs(transaction.amount), transaction.user_id]
+                        [amountPaise, transaction.user_id]
                     );
                     logger.info(`Payment successful for transaction ${order_id} - user ${transaction.user_id}`);
+                    // Non-fatal side effects
+                    emailService.emailTopupConfirmed(transaction.user_id, (amountPaise / 100).toFixed(0)).catch(() => { });
+                    resumeGracePeriodDatabases(transaction.user_id).catch(() => { });
                 } else {
                     logger.info(`Transaction ${order_id} already processed or not pending.`);
                 }
@@ -151,11 +157,14 @@ export const verifyReturn = async (req, res) => {
                         [order_id]
                     );
                     const transaction = rows[0];
+                    const amountPaise2 = Math.abs(transaction.amount);
                     await client.query(
                         'UPDATE users SET balance = balance + $1 WHERE id = $2',
-                        [Math.abs(transaction.amount), transaction.user_id]
+                        [amountPaise2, transaction.user_id]
                     );
                     logger.info(`Payment successful (verified manually) for transaction ${order_id}`);
+                    emailService.emailTopupConfirmed(transaction.user_id, (amountPaise2 / 100).toFixed(0)).catch(() => { });
+                    resumeGracePeriodDatabases(transaction.user_id).catch(() => { });
                 }
                 await client.query('COMMIT');
             } catch (err) {
