@@ -167,8 +167,8 @@ class K8sService {
 
   // ── Deployments ────────────────────────────────────────────────────────────
 
-  async createDeployment({ name, namespace, image, containerPort, plan, env, command, args, replicas = 1 }) {
-    const spec = this._buildPodSpec({ image, containerPort, plan, env, command, args });
+  async createDeployment({ name, namespace, image, containerPort, plan, env, command, args, replicas = 1, hasRegistrySecret = false }) {
+    const spec = this._buildPodSpec({ image, containerPort, plan, env, command, args, hasRegistrySecret });
     await withRetry(() => this.apps.createNamespacedDeployment({
       namespace,
       body: {
@@ -190,7 +190,7 @@ class K8sService {
       });
   }
 
-  async updateDeployment({ name, namespace, image, containerPort, plan, env, command, args, replicas }) {
+  async updateDeployment({ name, namespace, image, containerPort, plan, env, command, args, replicas, hasRegistrySecret = false }) {
     const current = await withRetry(
       () => this.apps.readNamespacedDeployment({ name, namespace }),
       { label: `readDeployment(${name})` }
@@ -203,6 +203,7 @@ class K8sService {
       env: env !== undefined ? env : null,
       command: command !== undefined ? command : null,
       args: args !== undefined ? args : null,
+      hasRegistrySecret,
     });
 
     current.spec.template.spec = { ...current.spec.template.spec, ...newSpec };
@@ -449,7 +450,16 @@ class K8sService {
     }
   }
 
-  // ── Pod helpers ────────────────────────────────────────────────────────────
+  async deleteNamespacedSecret(name, namespace) {
+    await withRetry(() => this.core.deleteNamespacedSecret({ name, namespace }), {
+      label: `deleteSecret(${name}, ${namespace})`,
+      retryIf: (err) => this._getErrorCode(err) !== 404,
+    }).catch(err => {
+      if (this._getErrorCode(err) === 404) return; // already gone — fine
+      throw err;
+    });
+  }
+
 
   async getAppStatus(name, namespace) {
     const res = await withRetry(
@@ -568,7 +578,7 @@ class K8sService {
 
   // ── Private helpers ─────────────────────────────────────────────────────────
 
-  _buildPodSpec({ image, containerPort, plan, env, command, args }) {
+  _buildPodSpec({ image, containerPort, plan, env, command, args, hasRegistrySecret = false }) {
     const cpuRequest = plan?.cpu_request || '10m';
     const cpuLimit = plan?.cpu || '100m';
     const memoryRequest = plan?.memory_request || plan?.memory || '128Mi';
@@ -590,16 +600,15 @@ class K8sService {
     if (args && Array.isArray(args)) container.args = args;
 
     const podSpec = {
-      // Only include user-provided registry secret.
-      // 'regcred' is a GHCR secret that lives in the 'wrexer' namespace only,
-      // it does NOT exist in user namespaces and causes Docker Hub 401s.
-      // 'user-registry-key' is synced per-user only when they provide credentials,
-      // so it's safe to reference — K8s silently ignores missing optional secrets.
-      imagePullSecrets: [
-        { name: 'user-registry-key' } // User-provided Docker Hub/private registry secret
-      ],
       containers: [container],
     };
+
+    // Only include the registry secret if the user actually provided credentials.
+    // If we always include 'user-registry-key' and it exists with bad/expired creds,
+    // Docker Hub returns 401 — even for public images.
+    if (hasRegistrySecret) {
+      podSpec.imagePullSecrets = [{ name: 'user-registry-key' }];
+    }
 
     if (plan?.runtime === 'kata') {
       podSpec.runtimeClassName = 'kata';

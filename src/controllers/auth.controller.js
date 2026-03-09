@@ -135,6 +135,12 @@ export const updateDockerToken = async (req, res) => {
     const { updateDockerCredentials } = await import('../models/user.model.js');
     await updateDockerCredentials(req.user.id, username, token);
 
+    // Sync new credentials to K8s immediately so running apps can use them
+    const namespace = `user-${req.user.id}`;
+    await k8sService.syncUserRegistrySecret(namespace, username, token).catch(err => {
+      logger.warn('Failed to sync docker secret to K8s during update (non-fatal)', err?.message);
+    });
+
     return res.status(200).json({
       success: true,
       message: 'Docker credentials updated successfully'
@@ -265,6 +271,13 @@ export const deleteDockerToken = async (req, res) => {
   try {
     const { updateDockerCredentials } = await import('../models/user.model.js');
     await updateDockerCredentials(req.user.id, null, null);
+
+    // Also delete the K8s secret so old creds don't persist in the cluster.
+    // If the secret doesn't exist, this is a no-op (handled gracefully inside).
+    const namespace = `user-${req.user.id}`;
+    await k8sService.deleteNamespacedSecret('user-registry-key', namespace).catch(err => {
+      logger.warn('Failed to delete user-registry-key secret from K8s (non-fatal)', err?.message);
+    });
 
     return res.status(200).json({
       success: true,

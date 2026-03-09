@@ -120,11 +120,13 @@ export const createApp = async (req, res) => {
     // 3. Create K8s infrastructure
     try {
       // Sync registry secret if user has provided credentials
+      let hasRegistrySecret = false;
       if (user.docker_username && user.docker_token) {
         await k8sService.syncUserRegistrySecret(namespace, user.docker_username, user.docker_token);
+        hasRegistrySecret = true;
       }
 
-      await k8sService.createDeployment({ name: resourceName, namespace, image, containerPort, plan, env, command, args, replicas: finalReplicas });
+      await k8sService.createDeployment({ name: resourceName, namespace, image, containerPort, plan, env, command, args, replicas: finalReplicas, hasRegistrySecret });
       await k8sService.createService({ name: resourceName, namespace, servicePort, containerPort });
       await k8sService.createIngress({ name: resourceName, namespace, host, port: servicePort });
     } catch (k8sErr) {
@@ -246,8 +248,10 @@ export const updateApp = async (req, res) => {
     const resourceName = `app-${shortId}`;
 
     const user = req.user;
+    let hasRegistrySecret = false;
     if (user.docker_username && user.docker_token) {
       await k8sService.syncUserRegistrySecret(app.namespace, user.docker_username, user.docker_token);
+      hasRegistrySecret = true;
     }
 
     await k8sService.updateDeployment({
@@ -260,6 +264,7 @@ export const updateApp = async (req, res) => {
       command: newCommand,
       args: newArgs,
       replicas: newReplicas,
+      hasRegistrySecret,
     });
 
     await updateAppDetails(app.id, {
