@@ -1,43 +1,41 @@
-const WINDOW_MS = 60 * 1000; // 1 minute
-const LIMIT = 120; // requests per minute per IP
+import rateLimit from 'express-rate-limit';
+import { RedisStore } from 'rate-limit-redis';
+import { redis } from '../lib/redis.js';
 
-// ip -> { count, windowStart }
-const buckets = new Map();
-
-export const rateLimiter = (req, res, next) => {
-  const key = req.ip || req.socket?.remoteAddress || 'unknown';
-  const now = Date.now();
-  const bucket = buckets.get(key);
-
-  if (!bucket) {
-    buckets.set(key, { count: 1, windowStart: now });
-    return next();
-  }
-
-  if (now - bucket.windowStart > WINDOW_MS) {
-    bucket.count = 1;
-    bucket.windowStart = now;
-    return next();
-  }
-
-  if (bucket.count >= LIMIT) {
-    return res.status(429).json({
-      error: 'rate limit exceeded',
-      limit: LIMIT,
-      window: '1 minute'
+// Global rate limiter — 120 requests/minute per IP, shared across all pods via Redis
+export const rateLimiter = rateLimit({
+  windowMs: 60 * 1000,
+  max: 120,
+  standardHeaders: true,
+  legacyHeaders: false,
+  store: new RedisStore({
+    sendCommand: (...args) => redis.call(...args),
+    prefix: 'rl:global:',
+  }),
+  handler: (_req, res) => {
+    res.status(429).json({
+      error: 'Rate limit exceeded',
+      limit: 120,
+      window: '1 minute',
     });
-  }
+  },
+});
 
-  bucket.count++;
-  next();
-};
-
-// Memory protection: clean up stale IP buckets every 5 minutes
-setInterval(() => {
-  const now = Date.now();
-  for (const [ip, bucket] of buckets.entries()) {
-    if (now - bucket.windowStart > WINDOW_MS * 2) {
-      buckets.delete(ip);
-    }
-  }
-}, 300000);
+// Strict limiter for /api/contact — 3 submissions per IP per 10 minutes
+export const contactRateLimiter = rateLimit({
+  windowMs: 10 * 60 * 1000,
+  max: 3,
+  standardHeaders: true,
+  legacyHeaders: false,
+  store: new RedisStore({
+    sendCommand: (...args) => redis.call(...args),
+    prefix: 'rl:contact:',
+  }),
+  handler: (_req, res) => {
+    res.status(429).json({
+      error: 'Too many contact submissions. Please wait 10 minutes before trying again.',
+      limit: 3,
+      window: '10 minutes',
+    });
+  },
+});

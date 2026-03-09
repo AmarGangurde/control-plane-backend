@@ -4,7 +4,8 @@ import {
     handleAdminUpdateContactStatus,
     handleAdminListTickets,
     handleAdminGetTicket,
-    handleAdminReplyTicket
+    handleAdminReplyTicket,
+    handleAdminUpdateTicketStatus,
 } from '../controllers/support.controller.js';
 import { requireAdminKey } from '../middleware/adminAuth.js';
 
@@ -22,5 +23,6 @@ router.patch('/contacts/:id/status', catchAsync(handleAdminUpdateContactStatus))
 router.get('/tickets', catchAsync(handleAdminListTickets));
 router.get('/tickets/:id', catchAsync(handleAdminGetTicket));
 router.post('/tickets/:id/message', catchAsync(handleAdminReplyTicket));
+router.patch('/tickets/:id/status', catchAsync(handleAdminUpdateTicketStatus));
 
 export default router;

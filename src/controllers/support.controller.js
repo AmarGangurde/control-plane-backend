@@ -1,5 +1,6 @@
 import * as supportService from '../services/support.service.js';
 import logger from '../utils/logger.js';
+import { emitNewMessage, emitTicketStatus } from '../lib/socketServer.js';
 
 /**
  * Public Contact API
@@ -93,6 +94,7 @@ export const handleReplyTicket = async (req, res) => {
         }
 
         const newMessage = await supportService.addTicketMessage(id, 'user', userId, message);
+        emitNewMessage(id, newMessage); // broadcast to all sockets in this ticket room
         res.status(201).json(newMessage);
     } catch (err) {
         logger.error('Failed to reply to ticket', err);
@@ -151,7 +153,22 @@ export const handleAdminReplyTicket = async (req, res) => {
 
     try {
         const newMessage = await supportService.adminReplyTicket(id, message);
+        emitNewMessage(id, newMessage); // broadcast to all sockets in this ticket room
         res.status(201).json(newMessage);
+    } catch (err) {
+        res.status(500).json({ error: 'Internal error' });
+    }
+};
+
+export const handleAdminUpdateTicketStatus = async (req, res) => {
+    const { id } = req.params;
+    const { status } = req.body;
+    if (!status) return res.status(400).json({ error: 'Status required' });
+
+    try {
+        await supportService.adminUpdateTicketStatus(id, status);
+        emitTicketStatus(id, status); // notify user+admin sockets immediately
+        res.json({ success: true });
     } catch (err) {
         res.status(500).json({ error: 'Internal error' });
     }
