@@ -590,9 +590,13 @@ class K8sService {
     if (args && Array.isArray(args)) container.args = args;
 
     const podSpec = {
+      // Only include user-provided registry secret.
+      // 'regcred' is a GHCR secret that lives in the 'wrexer' namespace only,
+      // it does NOT exist in user namespaces and causes Docker Hub 401s.
+      // 'user-registry-key' is synced per-user only when they provide credentials,
+      // so it's safe to reference — K8s silently ignores missing optional secrets.
       imagePullSecrets: [
-        { name: 'regcred' },           // System GHCR secret
-        { name: 'user-registry-key' } // User-provided Docker Hub secret (if exists)
+        { name: 'user-registry-key' } // User-provided Docker Hub/private registry secret
       ],
       containers: [container],
     };
