@@ -62,7 +62,7 @@ export const deleteAppById = async (id) => {
 export const updateAppDetails = async (id, data) => {
   const {
     image, containerPort, env, command, args, replicas, url,
-    db_host, db_port, db_user, db_password, db_name, status
+    db_host, db_port, db_user, db_password, db_name, status, alias
   } = data;
 
   const envStr = env ? JSON.stringify(env) : null;
@@ -85,6 +85,10 @@ export const updateAppDetails = async (id, data) => {
   if (db_password !== undefined) { updates.push(`db_password = $${params.push(db_password)}`); }
   if (db_name !== undefined) { updates.push(`db_name = $${params.push(db_name)}`); }
   if (status !== undefined) { updates.push(`status = $${params.push(status)}`); }
+  // alias can be set to NULL (removal) — use explicit null sentinel via hasOwnProperty
+  if (Object.prototype.hasOwnProperty.call(data, 'alias')) {
+    updates.push(`alias = $${params.push(alias ?? null)}`);
+  }
 
   if (updates.length > 0) {
     await db.query(`UPDATE apps SET ${updates.join(', ')} WHERE id = $1`, params);

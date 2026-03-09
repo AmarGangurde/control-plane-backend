@@ -181,7 +181,19 @@ const initDb = async (retries = 5) => {
         ALTER TABLE users ADD COLUMN IF NOT EXISTS docker_username TEXT;
         ALTER TABLE users ADD COLUMN IF NOT EXISTS docker_token TEXT;
         ALTER TABLE users ADD COLUMN IF NOT EXISTS github_id TEXT UNIQUE;
+        ALTER TABLE apps ADD COLUMN IF NOT EXISTS alias TEXT;
       EXCEPTION WHEN duplicate_column THEN NULL;
+      END $$;
+    `);
+
+        // Ensure UNIQUE constraint on alias (safe — ignored if already exists)
+        await client.query(`
+      DO $$ BEGIN
+        IF NOT EXISTS (
+          SELECT 1 FROM pg_constraint WHERE conname = 'apps_alias_unique'
+        ) THEN
+          ALTER TABLE apps ADD CONSTRAINT apps_alias_unique UNIQUE (alias);
+        END IF;
       END $$;
     `);
 

@@ -370,6 +370,33 @@ class K8sService {
     });
   }
 
+  /**
+   * Patches an existing Ingress to route a list of hostnames to the same service.
+   * Pass a single host to remove an alias; pass [originalHost, aliasHost] to add one.
+   */
+  async updateIngressHosts(name, namespace, hosts, port = 80) {
+    const current = await withRetry(
+      () => this.net.readNamespacedIngress({ name, namespace }),
+      { label: `readIngress(${name})` }
+    );
+
+    current.spec.rules = hosts.map(host => ({
+      host,
+      http: {
+        paths: [{
+          path: '/',
+          pathType: 'Prefix',
+          backend: { service: { name, port: { number: port } } },
+        }],
+      },
+    }));
+
+    await withRetry(
+      () => this.net.replaceNamespacedIngress({ name, namespace, body: current }),
+      { label: `patchIngressHosts(${name})` }
+    );
+  }
+
   // ── PVC ────────────────────────────────────────────────────────────────────
 
   async createPVC({ namespace, name, size = '1Gi' }) {

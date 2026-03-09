@@ -5,7 +5,7 @@ import { requestId } from './middleware/requestId.js';
 import cookieParser from 'cookie-parser';
 import authRoutes from './routes/auth.routes.js';
 import { listApiKeys } from './controllers/keys.controller.js';
-import { createApp, listApps, getApp, getAppLogs, updateApp, deleteApp } from './controllers/apps.controller.js';
+import { createApp, listApps, getApp, getAppLogs, updateApp, deleteApp, setAlias, removeAlias, checkAliasAvailability } from './controllers/apps.controller.js';
 import {
   listPlans,
   getBalance,
@@ -87,6 +87,9 @@ api.get('/apps/:id', requireAuth, catchAsync(getApp));
 api.get('/apps/:id/logs', requireAuth, catchAsync(getAppLogs));
 api.put('/apps/:id', requireAuth, catchAsync(updateApp));
 api.delete('/apps/:id', requireAuth, catchAsync(deleteApp));
+api.put('/apps/:id/alias', requireAuth, catchAsync(setAlias));
+api.delete('/apps/:id/alias', requireAuth, catchAsync(removeAlias));
+api.get('/apps/alias/check', catchAsync(checkAliasAvailability)); // public — no auth
 
 api.get('/billing/plans', requireAuth, catchAsync(listPlans));
 api.get('/billing/balance', requireAuth, getBalance);

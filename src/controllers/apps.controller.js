@@ -18,7 +18,7 @@ import { withRetry } from '../utils/retry.js';
 
 export const createApp = async (req, res) => {
   try {
-    const { image, port, planId = 'p-small', name, env, command, args, replicas = 1 } = req.body;
+    const { image, port, planId = 'p-small', name, env, command, args, replicas = 1, alias } = req.body;
     const user = req.user;
 
     if (!name) {
@@ -140,7 +140,21 @@ export const createApp = async (req, res) => {
       throw new Error(`Cloud deployment failed: ${k8sErr.message}`);
     }
 
-    return res.status(201).json({ id: appId, name, url, status: 'deploying' });
+    // 4. Apply alias if provided
+    let aliasWarning = null;
+    if (alias && typeof alias === 'string') {
+      const cleanAlias = alias.toLowerCase().trim();
+      const aliasHost = `${cleanAlias}.${baseDomain}`;
+      try {
+        await k8sService.updateIngressHosts(resourceName, namespace, [host, aliasHost]);
+        await updateAppDetails(appId, { alias: cleanAlias });
+      } catch (aliasErr) {
+        logger.warn('Alias setup failed at launch (non-fatal)', aliasErr.message);
+        aliasWarning = `App deployed successfully, but alias "${cleanAlias}" could not be set (it may be taken). You can set it later from the edit panel.`;
+      }
+    }
+
+    return res.status(201).json({ id: appId, name, url, status: 'deploying', ...(aliasWarning ? { aliasWarning } : {}) });
   } catch (err) {
     logger.error('createApp error', err);
     res.status(500).json({ error: err.message });
@@ -304,4 +318,122 @@ export const deleteApp = async (req, res) => {
   await killAppCompletely(app);
 
   res.json({ deleted: true });
+};
+
+// ── Alias management ──────────────────────────────────────────────────────────
+
+const ALIAS_BLOCKLIST = new Set([
+  'www', 'api', 'admin', 'mail', 'dashboard', 'billing', 'app',
+  'wrexer', 'support', 'dev', 'staging', 'ns', 'ftp', 'smtp',
+  'cdn', 'static', 'assets', 'auth', 'login', 'signup', 'register',
+]);
+
+const ALIAS_REGEX = /^[a-z0-9][a-z0-9-]{1,28}[a-z0-9]$/;
+
+export const setAlias = async (req, res) => {
+  const app = await getAppById(req.params.id);
+  if (!app || app.user_id !== req.user.id) {
+    return res.status(404).json({ error: 'app not found' });
+  }
+  if (app.type !== 'app') {
+    return res.status(400).json({ error: 'Aliases are only supported for apps, not databases.' });
+  }
+
+  const { slug } = req.body;
+  if (!slug || typeof slug !== 'string') {
+    return res.status(400).json({ error: 'slug is required' });
+  }
+
+  const cleanSlug = slug.toLowerCase().trim();
+
+  if (!ALIAS_REGEX.test(cleanSlug)) {
+    return res.status(400).json({ error: 'Invalid slug. Use 3–30 lowercase letters, numbers, and hyphens (must start and end with a letter or number).' });
+  }
+
+  if (ALIAS_BLOCKLIST.has(cleanSlug)) {
+    return res.status(400).json({ error: `"${cleanSlug}" is reserved and cannot be used as an alias.` });
+  }
+
+  const aliasHost = `${cleanSlug}.${baseDomain}`;
+  const shortId = app.id.split('-')[0];
+  const resourceName = `app-${shortId}`;
+
+  try {
+    // Patch Ingress first — if it fails we don't touch the DB
+    await k8sService.updateIngressHosts(resourceName, app.namespace, [
+      app.url.replace(/^https?:\/\//, ''), // original host
+      aliasHost,
+    ]);
+  } catch (k8sErr) {
+    logger.error('Failed to patch ingress for alias', k8sErr);
+    return res.status(500).json({ error: 'Failed to update routing. Try again.' });
+  }
+
+  try {
+    await updateAppDetails(app.id, { alias: cleanSlug });
+  } catch (dbErr) {
+    // UNIQUE violation — slug already taken
+    if (dbErr.code === '23505') {
+      // Rollback ingress to single host
+      await k8sService.updateIngressHosts(resourceName, app.namespace, [
+        app.url.replace(/^https?:\/\//, ''),
+      ]).catch(() => { });
+      return res.status(409).json({ error: `"${cleanSlug}" is already taken. Choose a different alias.` });
+    }
+    throw dbErr;
+  }
+
+  const protocol = baseDomain === 'localhost' ? 'http' : 'https';
+  return res.json({
+    success: true,
+    alias: cleanSlug,
+    aliasUrl: `${protocol}://${aliasHost}`,
+  });
+};
+
+export const removeAlias = async (req, res) => {
+  const app = await getAppById(req.params.id);
+  if (!app || app.user_id !== req.user.id) {
+    return res.status(404).json({ error: 'app not found' });
+  }
+  if (!app.alias) {
+    return res.status(400).json({ error: 'This app has no alias set.' });
+  }
+
+  const shortId = app.id.split('-')[0];
+  const resourceName = `app-${shortId}`;
+
+  // Restore Ingress to single host
+  await k8sService.updateIngressHosts(resourceName, app.namespace, [
+    app.url.replace(/^https?:\/\//, ''),
+  ]);
+
+  await updateAppDetails(app.id, { alias: null });
+
+  return res.json({ success: true });
+};
+
+export const checkAliasAvailability = async (req, res) => {
+  const { slug } = req.query;
+  if (!slug) return res.status(400).json({ error: 'slug is required' });
+
+  const cleanSlug = slug.toLowerCase().trim();
+
+  // Re-use the same validation constants
+  const BLOCKED = new Set([
+    'www', 'api', 'admin', 'mail', 'dashboard', 'billing', 'app',
+    'wrexer', 'support', 'dev', 'staging', 'ns', 'ftp', 'smtp',
+    'cdn', 'static', 'assets', 'auth', 'login', 'signup', 'register',
+  ]);
+  const REGEX = /^[a-z0-9][a-z0-9-]{1,28}[a-z0-9]$/;
+
+  if (!REGEX.test(cleanSlug)) {
+    return res.json({ available: false, reason: 'Invalid format. Use 3–30 lowercase letters, numbers, and hyphens.' });
+  }
+  if (BLOCKED.has(cleanSlug)) {
+    return res.json({ available: false, reason: `"${cleanSlug}" is a reserved name.` });
+  }
+
+  const { rows } = await db.query('SELECT id FROM apps WHERE alias = $1', [cleanSlug]);
+  return res.json({ available: rows.length === 0 });
 };
