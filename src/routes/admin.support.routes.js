@@ -7,6 +7,7 @@ import {
     handleAdminReplyTicket,
     handleAdminUpdateTicketStatus,
 } from '../controllers/support.controller.js';
+import { adminGrantTopup } from '../controllers/billing.controller.js';
 import { requireAdminKey } from '../middleware/adminAuth.js';
 
 const router = express.Router();
@@ -24,5 +25,7 @@ router.get('/tickets', catchAsync(handleAdminListTickets));
 router.get('/tickets/:id', catchAsync(handleAdminGetTicket));
 router.post('/tickets/:id/message', catchAsync(handleAdminReplyTicket));
 router.patch('/tickets/:id/status', catchAsync(handleAdminUpdateTicketStatus));
+
+router.post('/grants/topup', catchAsync(adminGrantTopup));
 
 export default router;

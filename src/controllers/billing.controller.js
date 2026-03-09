@@ -174,6 +174,60 @@ export const verifyReturn = async (req, res) => {
     }
 };
 
+export const adminGrantTopup = async (req, res) => {
+    const { userId, amount } = req.body;
+
+    if (!userId) {
+        return res.status(400).json({ error: 'userId is required' });
+    }
+
+    if (![50, 100, 200, 500].includes(amount)) {
+        return res.status(400).json({ error: 'Invalid amount. Choose 50, 100, 200, or 500.' });
+    }
+
+    // Verify user exists
+    const userCheck = await db.query('SELECT id, email FROM users WHERE id = $1', [userId]);
+    if (userCheck.rows.length === 0) {
+        return res.status(404).json({ error: 'User not found' });
+    }
+
+    const amountPaise = amount * 100;
+    const transactionId = `ADMIN_GRANT_${uuidv4().split('-')[0].toUpperCase()}`;
+
+    const client = await db.getClient();
+    try {
+        await client.query('BEGIN');
+
+        await client.query(
+            `INSERT INTO transactions (id, user_id, amount, type, status, external_id)
+             VALUES ($1, $2, $3, 'topup', 'success', $4)`,
+            [uuidv4(), userId, amountPaise, transactionId]
+        );
+
+        await client.query(
+            'UPDATE users SET balance = balance + $1 WHERE id = $2',
+            [amountPaise, userId]
+        );
+
+        await client.query('COMMIT');
+
+        logger.info(`Admin granted ₹${amount} to user ${userCheck.rows[0].email} (${userId}) via ${transactionId}`);
+
+        return res.json({
+            success: true,
+            transactionId,
+            user: userCheck.rows[0].email,
+            amount,
+        });
+    } catch (err) {
+        await client.query('ROLLBACK');
+        logger.error('Admin grant topup failed', err);
+        return res.status(500).json({ error: 'Grant failed' });
+    } finally {
+        client.release();
+    }
+};
+
 export const getTransactions = async (req, res) => {
     await db.query(`
         UPDATE transactions 
