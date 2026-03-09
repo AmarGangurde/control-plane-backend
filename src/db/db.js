@@ -160,6 +160,23 @@ const initDb = async (retries = 5) => {
           )
         `);
 
+        // Reserved Aliases (persistent slugs owned by users independent of apps)
+        await client.query(`
+          CREATE TABLE IF NOT EXISTS reserved_aliases (
+            id TEXT PRIMARY KEY,
+            user_id TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+            slug TEXT NOT NULL UNIQUE,
+            assigned_app_id TEXT REFERENCES apps(id) ON DELETE SET NULL,
+            status TEXT DEFAULT 'active',
+            price_per_month INTEGER NOT NULL DEFAULT 4900,
+            reserved_at TIMESTAMPTZ DEFAULT NOW(),
+            expires_at TIMESTAMPTZ NOT NULL,
+            last_billed_at TIMESTAMPTZ DEFAULT NOW()
+          )
+        `);
+        await client.query(`CREATE UNIQUE INDEX IF NOT EXISTS idx_reserved_aliases_slug ON reserved_aliases(slug)`);
+        await client.query(`CREATE INDEX IF NOT EXISTS idx_reserved_aliases_user ON reserved_aliases(user_id)`);
+
         // Indexes
         await client.query(`CREATE INDEX IF NOT EXISTS idx_contacts_created ON contact_messages(created_at DESC)`);
         await client.query(`CREATE INDEX IF NOT EXISTS idx_tickets_user ON tickets(user_id)`);

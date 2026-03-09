@@ -3,6 +3,7 @@ import http from 'http';
 import app from './app.js';
 import { createSocketServer } from './lib/socketServer.js';
 import { startBillingCron, startPaymentVerificationCron } from './services/billing.service.js';
+import { startReservedAliasBillingCron } from './controllers/reservedAlias.controller.js';
 import db from './db/db.js';
 import logger from './utils/logger.js';
 
@@ -18,6 +19,9 @@ const start = async () => {
 
   // Start background payment verification
   startPaymentVerificationCron();
+
+  // Start reserved alias monthly billing cron
+  startReservedAliasBillingCron();
 
   // Create HTTP server and attach Socket.io with Redis adapter
   const httpServer = http.createServer(app);

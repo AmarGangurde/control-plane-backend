@@ -6,6 +6,7 @@ import cookieParser from 'cookie-parser';
 import authRoutes from './routes/auth.routes.js';
 import { listApiKeys } from './controllers/keys.controller.js';
 import { createApp, listApps, getApp, getAppLogs, updateApp, deleteApp, setAlias, removeAlias, checkAliasAvailability } from './controllers/apps.controller.js';
+import { listReservedAliases, reserveAlias, assignAlias, releaseAlias } from './controllers/reservedAlias.controller.js';
 import {
   listPlans,
   getBalance,
@@ -90,6 +91,12 @@ api.delete('/apps/:id', requireAuth, catchAsync(deleteApp));
 api.put('/apps/:id/alias', requireAuth, catchAsync(setAlias));
 api.delete('/apps/:id/alias', requireAuth, catchAsync(removeAlias));
 api.get('/apps/alias/check', catchAsync(checkAliasAvailability)); // public — no auth
+
+// Reserved Alias routes
+api.get('/aliases', requireAuth, catchAsync(listReservedAliases));
+api.post('/aliases', requireAuth, catchAsync(reserveAlias));
+api.put('/aliases/:id/assign', requireAuth, catchAsync(assignAlias));
+api.delete('/aliases/:id', requireAuth, catchAsync(releaseAlias));
 
 api.get('/billing/plans', requireAuth, catchAsync(listPlans));
 api.get('/billing/balance', requireAuth, getBalance);

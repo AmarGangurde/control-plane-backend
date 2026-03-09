@@ -358,6 +358,17 @@ export const setAlias = async (req, res) => {
   const shortId = app.id.split('-')[0];
   const resourceName = `app-${shortId}`;
 
+  // Block if this app already has a RESERVED alias assigned to it
+  const { rows: reservedRows } = await db.query(
+    `SELECT ra.slug FROM reserved_aliases ra WHERE ra.assigned_app_id = $1 AND ra.status = 'active'`,
+    [app.id]
+  );
+  if (reservedRows.length > 0) {
+    return res.status(409).json({
+      error: `This app has the reserved alias "${reservedRows[0].slug}.wrexer.com" assigned. Remove it from the Aliases page first before setting a free alias.`
+    });
+  }
+
   try {
     // Patch Ingress first — if it fails we don't touch the DB
     await k8sService.updateIngressHosts(resourceName, app.namespace, [
