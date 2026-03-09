@@ -119,9 +119,14 @@ export const createApp = async (req, res) => {
 
     // 3. Create K8s infrastructure
     try {
+      // Option A: Pre-flight check — is the image publicly accessible?
+      // If yes, skip imagePullSecrets entirely regardless of stored credentials.
+      // If no (private or check failed), use the user's credentials if available.
+      const imageIsPublic = await imageService.isPublicImage(image);
+
       // Sync registry secret if user has provided credentials
       let hasRegistrySecret = false;
-      if (user.docker_username && user.docker_token) {
+      if (!imageIsPublic && user.docker_username && user.docker_token) {
         await k8sService.syncUserRegistrySecret(namespace, user.docker_username, user.docker_token);
         hasRegistrySecret = true;
       }

@@ -132,6 +132,24 @@ export const updateDockerToken = async (req, res) => {
       return res.status(400).json({ error: 'Username and token are required' });
     }
 
+    // Option C: Validate credentials against Docker Hub before saving.
+    // This prevents bad/expired tokens from ever being stored and poisoning pulls.
+    try {
+      const authStr = Buffer.from(`${username}:${token}`).toString('base64');
+      const validateRes = await fetch(
+        'https://auth.docker.io/token?service=registry.docker.io&scope=repository:library/hello-world:pull',
+        { headers: { Authorization: `Basic ${authStr}` } }
+      );
+      if (!validateRes.ok) {
+        return res.status(400).json({
+          error: 'Invalid Docker credentials. Please check your username and access token.'
+        });
+      }
+    } catch (validationErr) {
+      // If Docker Hub is unreachable, don't block the user — just warn and continue
+      logger.warn('Docker Hub credential validation failed (network issue), skipping check', validationErr?.message);
+    }
+
     const { updateDockerCredentials } = await import('../models/user.model.js');
     await updateDockerCredentials(req.user.id, username, token);
 

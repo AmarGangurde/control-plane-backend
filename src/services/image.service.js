@@ -65,6 +65,33 @@ class ImageService {
             return 80; // Fallback to 80
         }
     }
+
+    /**
+     * Option A: Pre-flight image visibility check.
+     * Returns true if the image can be pulled WITHOUT any credentials (i.e., it's public).
+     * Falls back to false on any error, which means private images still work correctly.
+     */
+    async isPublicImage(imageName) {
+        imageName = imageName?.trim();
+        const fullImageName = imageName.includes('/')
+            ? (imageName.includes('.') ? imageName : `docker.io/${imageName}`)
+            : `docker.io/library/${imageName}`;
+
+        try {
+            execSync('skopeo --version', { stdio: 'ignore' });
+            // --no-creds tells skopeo to NOT use any auth — simulates anonymous pull
+            execSync(`skopeo inspect --no-creds docker://${fullImageName}`, {
+                stdio: 'pipe',
+                timeout: 10000, // 10s timeout to avoid hanging deploys
+            });
+            logger.info(`Image is public (no-creds check passed): ${fullImageName}`);
+            return true;
+        } catch (err) {
+            // Could be: auth required (private), image not found, or skopeo not available
+            logger.info(`Image is not public or check failed for ${fullImageName}: ${err.message?.slice(0, 80)}`);
+            return false;
+        }
+    }
 }
 
 export default new ImageService();
