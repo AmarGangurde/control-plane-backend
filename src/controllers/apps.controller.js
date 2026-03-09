@@ -15,6 +15,7 @@ import imageService from '../services/image.service.js';
 import { startPodBilling } from '../services/billing.service.js';
 import db from '../db/db.js';
 import { withRetry } from '../utils/retry.js';
+import * as emailService from '../services/email.service.js';
 
 export const createApp = async (req, res) => {
   try {
@@ -154,6 +155,7 @@ export const createApp = async (req, res) => {
       }
     }
 
+    emailService.emailAppDeployed(user.id, name, url).catch(() => { });
     return res.status(201).json({ id: appId, name, url, status: 'deploying', ...(aliasWarning ? { aliasWarning } : {}) });
   } catch (err) {
     logger.error('createApp error', err);
