@@ -65,7 +65,7 @@ export const createApp = async (req, res) => {
     // Auto-detect port from image if not provided
     let containerPort = port;
     if (!containerPort) {
-      containerPort = await imageService.getExposedPort(image);
+      containerPort = await imageService.getExposedPort(image, user.docker_username, user.docker_token);
     }
     const servicePort = 80;
 
@@ -262,7 +262,7 @@ export const updateApp = async (req, res) => {
 
     // Auto-detect port if image changed but port was not explicitly provided
     if (image && image !== app.image && port === undefined) {
-      newPort = await imageService.getExposedPort(image);
+      newPort = await imageService.getExposedPort(image, req.user?.docker_username, req.user?.docker_token);
     }
 
     const shortId = app.id.split('-')[0];

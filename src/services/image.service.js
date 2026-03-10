@@ -2,7 +2,7 @@ import { execSync } from 'child_process';
 import logger from '../utils/logger.js';
 
 class ImageService {
-    async getExposedPort(imageName) {
+    async getExposedPort(imageName, username, token) {
         imageName = imageName?.trim();
         try {
             logger.info(`Inspecting image metadata via skopeo: ${imageName}`);
@@ -21,8 +21,11 @@ class ImageService {
                     throw new Error('skopeo not found in PATH');
                 }
 
+                // Add credentials if provided
+                const credsFlag = (username && token) ? `--creds "${username}:${token}"` : '';
+
                 // use --config to get the actual image configuration including ExposedPorts
-                inspectOutput = execSync(`skopeo inspect --config docker://${fullImageName}`, { stdio: 'pipe' }).toString();
+                inspectOutput = execSync(`skopeo inspect ${credsFlag} --config docker://${fullImageName}`, { stdio: 'pipe' }).toString();
             } catch (e) {
                 logger.warn(`Skopeo check failed: ${e.message}.`);
 
