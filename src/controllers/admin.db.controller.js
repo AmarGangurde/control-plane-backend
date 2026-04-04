@@ -1,4 +1,5 @@
 import { spawn } from 'child_process';
+import { URL } from 'url';
 import logger from '../utils/logger.js';
 
 /**
@@ -54,6 +55,55 @@ export const adminDownloadInfraBackup = async (req, res) => {
         logger.error('Failed to start infra pg_dump process', { error: err.message });
         if (!res.headersSent) {
             res.status(500).json({ error: 'Failed to start backup process. Is pg_dump installed?' });
+        }
+    });
+};
+
+/**
+ * Admin-only: Accept an uploaded .sql file and restore it into the Wrexer infra database
+ * using psql, replacing all existing data.
+ * Protected by requireAdminKey.
+ */
+export const adminRestoreInfraDb = async (req, res) => {
+    const dbUrl = process.env.DATABASE_URL;
+
+    if (!dbUrl) {
+        return res.status(500).json({ error: 'DATABASE_URL is not configured on the backend' });
+    }
+
+    logger.info('Infra DB restore started');
+
+    const psqlProcess = spawn('psql', [`--dbname=${dbUrl}`, '--quiet']);
+
+    let errorLog = '';
+    psqlProcess.stderr.on('data', (data) => {
+        errorLog += data.toString();
+    });
+
+    // Pipe the raw request body (the uploaded SQL file) into psql stdin
+    req.pipe(psqlProcess.stdin);
+
+    req.on('error', (err) => {
+        logger.error('Restore: request stream error', { error: err.message });
+        psqlProcess.stdin.destroy();
+        if (!res.headersSent) {
+            res.status(500).json({ error: 'Upload stream error: ' + err.message });
+        }
+    });
+
+    psqlProcess.on('close', (code) => {
+        if (code !== 0) {
+            logger.error('Infra psql restore failed', { code, errorLog });
+            return res.status(500).json({ error: 'Restore failed: ' + errorLog });
+        }
+        logger.info('Infra DB restore completed successfully');
+        res.json({ success: true, message: 'Database restored successfully.' });
+    });
+
+    psqlProcess.on('error', (err) => {
+        logger.error('Failed to start psql restore process', { error: err.message });
+        if (!res.headersSent) {
+            res.status(500).json({ error: 'Failed to start restore process. Is psql installed?' });
         }
     });
 };

@@ -8,7 +8,7 @@ import {
     handleAdminUpdateTicketStatus,
 } from '../controllers/support.controller.js';
 import { adminGrantTopup } from '../controllers/billing.controller.js';
-import { adminDownloadInfraBackup } from '../controllers/admin.db.controller.js';
+import { adminDownloadInfraBackup, adminRestoreInfraDb } from '../controllers/admin.db.controller.js';
 import { requireAdminKey } from '../middleware/adminAuth.js';
 
 const router = express.Router();
@@ -31,5 +31,8 @@ router.post('/grants/topup', catchAsync(adminGrantTopup));
 
 // Infra DB backup download
 router.get('/infra-db/backup', catchAsync(adminDownloadInfraBackup));
+
+// Infra DB restore (upload a pg_dump .sql file — replaces existing data)
+router.post('/infra-db/restore', catchAsync(adminRestoreInfraDb));
 
 export default router;
