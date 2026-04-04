@@ -4,6 +4,7 @@ import app from './app.js';
 import { createSocketServer } from './lib/socketServer.js';
 import { startBillingCron, startPaymentVerificationCron } from './services/billing.service.js';
 import { startReservedAliasBillingCron } from './controllers/reservedAlias.controller.js';
+import { reconcileK8sResources } from './services/reconciler.service.js';
 import db from './db/db.js';
 import logger from './utils/logger.js';
 
@@ -22,6 +23,11 @@ const start = async () => {
 
   // Start reserved alias monthly billing cron
   startReservedAliasBillingCron();
+
+  // Reconcile k8s resources with DB state (non-fatal — runs in background)
+  reconcileK8sResources().catch(err =>
+    logger.error('Reconciler startup error (non-fatal):', err)
+  );
 
   // Create HTTP server and attach Socket.io with Redis adapter
   const httpServer = http.createServer(app);

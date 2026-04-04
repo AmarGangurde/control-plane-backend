@@ -140,17 +140,21 @@ export const listDatabases = async (req, res) => {
             // Get real-time status from k8s
             const currentStatus = await k8sService.getAppStatus(resourceName, db.namespace);
 
-            // If DB says stopped but k8s says unknown/missing, keep it as stopped
-            let status = currentStatus;
-            if (currentStatus === 'unknown' && db.status === 'stopped') {
-                status = 'stopped';
+            // If k8s has no pods yet (unknown) — trust the DB status.
+            // This covers the reconciliation window after a server restore, and stopped DBs.
+            if (currentStatus === 'unknown') {
+                return {
+                    ...db,
+                    url: maskUrl(db.url),
+                    db_password: '••••••••',
+                };
             }
 
             return {
                 ...db,
                 url: maskUrl(db.url),
                 db_password: '••••••••',
-                status: status || db.status
+                status: currentStatus || db.status
             };
         }));
 
