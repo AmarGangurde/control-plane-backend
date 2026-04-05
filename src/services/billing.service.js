@@ -500,7 +500,138 @@ export const startBillingCron = () => {
     setInterval(() => {
         runBillingLoop().catch(err => logger.error('Billing loop error:', err));
     }, 10000);
+
+    // Low-balance runway warning: check once per hour across all tenants
+    logger.info('Starting hourly low-balance runway warning loop...');
+    setInterval(() => {
+        runLowBalanceWarningLoop().catch(err => logger.error('Low-balance warning loop error:', err));
+    }, 60 * 60 * 1000);
 };
+
+/**
+ * Hourly loop that warns each user if their available balance will
+ * run out in < 5 days given their current total hourly burn rate
+ * (all running apps + all active db storage, across every service).
+ *
+ * One email per user per calendar day (23-hour dedup via low_balance_warned_at).
+ * When runway recovers to >= 5 days, low_balance_warned_at is reset so the
+ * warning can fire again next time balance dips.
+ */
+export const runLowBalanceWarningLoop = async () => {
+    const lockClient = await db.getClient();
+    let lockAcquired = false;
+    try {
+        const { rows: lockRows } = await lockClient.query('SELECT pg_try_advisory_lock(1004) as locked');
+        lockAcquired = lockRows[0].locked;
+        if (!lockAcquired) return;
+
+        // Fetch all users who have at least one billable service
+        const { rows: userServices } = await lockClient.query(`
+            SELECT
+                u.id            AS user_id,
+                u.balance       AS available_balance,
+                u.low_balance_warned_at,
+                a.id            AS app_id,
+                a.name          AS app_name,
+                a.type          AS app_type,
+                a.status        AS app_status,
+                a.hourly_rate,
+                a.storage_hourly_rate,
+                a.replicas
+            FROM users u
+            JOIN apps a ON a.user_id = u.id
+            WHERE
+                (a.status = 'running')
+                OR (a.type = 'database' AND a.status != 'deleted')
+            ORDER BY u.id
+        `);
+
+        if (userServices.length === 0) return;
+
+        // Group by user
+        const byUser = new Map();
+        for (const row of userServices) {
+            if (!byUser.has(row.user_id)) {
+                byUser.set(row.user_id, {
+                    user_id: row.user_id,
+                    available_balance: Number(row.available_balance || 0),
+                    low_balance_warned_at: row.low_balance_warned_at,
+                    services: [],
+                });
+            }
+            byUser.get(row.user_id).services.push(row);
+        }
+
+        for (const [userId, userData] of byUser) {
+            try {
+                // Calculate total effective hourly rate across all services
+                let totalHourlyRate = 0;
+                const serviceNames = [];
+                for (const s of userData.services) {
+                    const podRate = s.app_status === 'running'
+                        ? (Number(s.hourly_rate || 0) * (Number(s.replicas) || 1))
+                        : 0;
+                    const storageRate = s.app_type === 'database'
+                        ? Number(s.storage_hourly_rate || 0)
+                        : 0;
+                    const effectiveRate = podRate + storageRate;
+                    totalHourlyRate += effectiveRate;
+
+                    if (effectiveRate > 0) {
+                        const type = s.app_type === 'database' ? 'DB' : 'App';
+                        serviceNames.push(`${s.app_name} (${type})`);
+                    }
+                }
+
+                if (totalHourlyRate <= 0) continue;
+
+                const runwayHours = userData.available_balance / totalHourlyRate;
+                const runwayDays = runwayHours / 24;
+                const dailyCostRupees = (totalHourlyRate * 24) / 100;
+
+                if (runwayDays < 5) {
+                    // Check 23-hour dedup
+                    const lastWarned = userData.low_balance_warned_at
+                        ? new Date(userData.low_balance_warned_at)
+                        : null;
+                    const hoursSinceWarned = lastWarned
+                        ? (Date.now() - lastWarned.getTime()) / 3600000
+                        : Infinity;
+
+                    if (hoursSinceWarned >= 23) {
+                        // Send warning
+                        emailService.emailLowRunwayWarning(userId, runwayDays, dailyCostRupees, serviceNames)
+                            .catch(() => { });
+                        // Stamp warned time
+                        await db.query(
+                            'UPDATE users SET low_balance_warned_at = NOW() WHERE id = $1',
+                            [userId]
+                        );
+                        logger.info(`[runway-warn] Sent low-balance warning to user ${userId} — runway: ${runwayDays.toFixed(1)} days`);
+                    }
+                } else {
+                    // Runway recovered — reset so warning can fire again next time
+                    if (userData.low_balance_warned_at) {
+                        await db.query(
+                            'UPDATE users SET low_balance_warned_at = NULL WHERE id = $1',
+                            [userId]
+                        );
+                    }
+                }
+            } catch (err) {
+                logger.error(`[runway-warn] Error processing user ${userId}:`, err.message);
+            }
+        }
+    } catch (err) {
+        logger.error('[runway-warn] Loop error:', err);
+    } finally {
+        if (lockAcquired) {
+            await lockClient.query('SELECT pg_advisory_unlock(1004)');
+        }
+        lockClient.release();
+    }
+};
+
 
 /**
  * Background Payment Verification Loop

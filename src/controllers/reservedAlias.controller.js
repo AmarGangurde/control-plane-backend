@@ -267,20 +267,30 @@ export const runReservedAliasBillingLoop = async () => {
         lockClient.release();
     }
 
-    // 5-day expiry warning (separate scan, non-transactional, non-fatal)
+    // 5-day expiry warning — sent at most once per 23 hours per alias
     try {
         const in5 = new Date(Date.now() + 5 * 86400 * 1000);
         const { rows: expiring } = await db.query(
-            `SELECT * FROM reserved_aliases WHERE status = 'active' AND expires_at <= $1 AND expires_at > NOW()`,
+            `SELECT * FROM reserved_aliases
+             WHERE status = 'active'
+               AND expires_at <= $1
+               AND expires_at > NOW()
+               AND (last_warning_sent_at IS NULL OR last_warning_sent_at < NOW() - INTERVAL '23 hours')`,
             [in5]
         );
         for (const ra of expiring) {
             const daysLeft = Math.ceil((new Date(ra.expires_at) - Date.now()) / 86400000);
             emailService.emailAliasExpiringSoon(ra.user_id, ra.slug, daysLeft, ra.expires_at).catch(() => { });
+            // Stamp sent time so we don't re-send until tomorrow
+            db.query(
+                `UPDATE reserved_aliases SET last_warning_sent_at = NOW() WHERE id = $1`,
+                [ra.id]
+            ).catch(() => { });
         }
     } catch (e) {
         logger.warn('Error sending alias expiry warnings:', e.message);
     }
+
 };
 
 export const startReservedAliasBillingCron = () => {

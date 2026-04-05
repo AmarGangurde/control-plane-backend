@@ -1,6 +1,6 @@
 {
   "name": "control-plane-backend",
-  "version": "0.3.14",
+  "version": "0.3.15",
   "description": "Kubernetes-backed PaaS control plane",
   "main": "src/server.js",
   "type": "module",

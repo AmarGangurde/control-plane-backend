@@ -82,7 +82,27 @@ export async function emailLowBalanceWarning(userId, appName, balanceRupees) {
     `));
 }
 
-// 3. Database stopped — grace period started
+// 3. Low balance runway warning — balance < 5 days of total burn
+export async function emailLowRunwayWarning(userId, runwayDays, dailyCostRupees, serviceNames) {
+    const user = await getUserEmail(userId);
+    if (!user) return;
+    const daysStr = runwayDays < 1 ? 'less than 1 day' : `~${Math.floor(runwayDays)} day${Math.floor(runwayDays) === 1 ? '' : 's'}`;
+    const serviceList = serviceNames && serviceNames.length
+        ? `<ul style="margin:8px 0;padding-left:20px;color:#94a3b8;font-size:14px">${serviceNames.map(n => `<li>${n}</li>`).join('')}</ul>`
+        : '';
+    await sendMail(user.email, `⚠️ Low balance — your services may stop in ${daysStr}`, wrap(`
+        <h2>Low Balance Warning</h2>
+        <p>Hi there,</p>
+        <p>Based on your current usage, your account balance will run out in approximately <strong>${daysStr}</strong>.</p>
+        <p>Your daily infrastructure cost is <strong>₹${dailyCostRupees.toFixed(2)}/day</strong> across your active services:</p>
+        ${serviceList}
+        <p>Once your balance runs out, running apps will be stopped and databases will enter a <strong>3-day grace period</strong> before permanent deletion.</p>
+        <span class="pill amber">~${daysStr} of runway left</span>
+        <a href="${frontendUrl || 'https://wrexer.com'}/billing" class="btn">Top Up Now →</a>
+    `));
+}
+
+// 4. Database stopped — grace period started
 export async function emailDatabaseGraceStarted(userId, dbName, deleteDate) {
     const user = await getUserEmail(userId);
     if (!user) return;
