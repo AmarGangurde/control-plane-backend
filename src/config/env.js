@@ -23,3 +23,10 @@ export const cashfree = {
     secretKey: process.env.CASHFREE_SECRET_KEY,
     env: process.env.CASHFREE_ENV || 'production'
 };
+
+export const paypal = {
+    clientId: process.env.PAYPAL_CLIENT_ID,
+    clientSecret: process.env.PAYPAL_CLIENT_SECRET,
+    env: process.env.PAYPAL_ENV || 'sandbox', // 'sandbox' or 'production'
+    inrUsdRate: parseFloat(process.env.PAYPAL_INR_USD_RATE || '0.012') // 1 INR = X USD
+};

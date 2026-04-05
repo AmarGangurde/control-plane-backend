@@ -13,7 +13,9 @@ import {
   initiatePayment,
   handleWebhook,
   verifyReturn,
-  getTransactions
+  getTransactions,
+  initiatePaypalPayment,
+  capturePaypalPayment
 } from './controllers/billing.controller.js';
 import {
   createDatabase,
@@ -103,6 +105,8 @@ api.get('/billing/balance', requireAuth, getBalance);
 api.post('/billing/initiate-payment', requireAuth, catchAsync(initiatePayment));
 api.post('/billing/verify-return', requireAuth, catchAsync(verifyReturn));
 api.get('/billing/transactions', requireAuth, catchAsync(getTransactions));
+api.post('/billing/initiate-paypal', requireAuth, catchAsync(initiatePaypalPayment));
+api.post('/billing/capture-paypal', requireAuth, catchAsync(capturePaypalPayment));
 
 // Database routes (Physical PostgreSQL Pods)
 api.post('/databases', requireAuth, catchAsync(createDatabase));

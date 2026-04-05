@@ -1,9 +1,10 @@
 import { updateUserBalance } from '../models/user.model.js';
 import { getPlans } from '../models/plan.model.js';
 import cashfreeService from '../services/cashfree.service.js';
+import paypalService from '../services/paypal.service.js';
 import db from '../db/db.js';
 import { v4 as uuidv4 } from 'uuid';
-import { frontendUrl, apiBase, cashfree } from '../config/env.js';
+import { frontendUrl, apiBase, cashfree, paypal as paypalConfig } from '../config/env.js';
 import logger from '../utils/logger.js';
 import * as emailService from '../services/email.service.js';
 import { resumeGracePeriodDatabases } from '../services/billing.service.js';
@@ -234,6 +235,105 @@ export const adminGrantTopup = async (req, res) => {
         return res.status(500).json({ error: 'Grant failed' });
     } finally {
         client.release();
+    }
+};
+
+export const initiatePaypalPayment = async (req, res) => {
+    const { amount } = req.body;
+    const user = req.user;
+
+    if (![50, 100, 200, 500].includes(amount)) {
+        return res.status(400).json({ error: 'Invalid amount. Choose 50, 100, 200, or 500.' });
+    }
+
+    const transactionId = `PP_${uuidv4().split('-')[0].toUpperCase()}`;
+    const amountPaise = amount * 100;
+    const amountUsd = parseFloat((amount * paypalConfig.inrUsdRate).toFixed(2));
+
+    // Create pending transaction
+    await db.query(
+        `INSERT INTO transactions (id, user_id, amount, type, status, external_id)
+         VALUES ($1, $2, $3, 'topup', 'pending', $4)`,
+        [uuidv4(), user.id, amountPaise, transactionId]
+    );
+
+    try {
+        // Note: PayPal automatically appends ?token=PAYPAL_ORDER_ID to the return URL.
+        // We pass internal_id and read `token` from URL params on the frontend for capture.
+        const { paypalOrderId, approveUrl } = await paypalService.createOrder({
+            internalOrderId: transactionId,
+            amountUsd,
+            returnUrl: `${frontendUrl}/billing?internal_id=${transactionId}`,
+            cancelUrl: `${frontendUrl}/billing?paypal_cancelled=1`
+        });
+
+        // Re-generate return URL now that we have the PayPal order ID
+        // (PayPal doesn't let you use the order ID in the return URL itself at creation time,
+        //  so we update the record with the PayPal order ID for capture lookup)
+        await db.query(
+            `UPDATE transactions SET metadata = $1 WHERE external_id = $2`,
+            [JSON.stringify({ paypalOrderId, gateway: 'paypal' }), transactionId]
+        );
+
+        return res.json({ approveUrl, internalId: transactionId, paypalOrderId });
+    } catch (err) {
+        logger.error('PayPal order creation failed', err);
+        return res.status(500).json({ error: 'PayPal payment initialization failed' });
+    }
+};
+
+export const capturePaypalPayment = async (req, res) => {
+    const { paypal_order_id, internal_id } = req.body;
+    const user = req.user;
+
+    if (!paypal_order_id || !internal_id) {
+        return res.status(400).json({ error: 'Missing paypal_order_id or internal_id' });
+    }
+
+    try {
+        const captureStatus = await paypalService.captureOrder(paypal_order_id);
+
+        if (captureStatus !== 'COMPLETED') {
+            return res.json({ status: captureStatus.toLowerCase() });
+        }
+
+        const client = await db.getClient();
+        try {
+            await client.query('BEGIN');
+            const updateResult = await client.query(
+                `UPDATE transactions SET status = 'success' WHERE external_id = $1 AND status = 'pending' AND user_id = $2`,
+                [internal_id, user.id]
+            );
+
+            if (updateResult.rowCount > 0) {
+                const { rows } = await client.query(
+                    'SELECT * FROM transactions WHERE external_id = $1',
+                    [internal_id]
+                );
+                const transaction = rows[0];
+                const amountPaise = Math.abs(transaction.amount);
+                await client.query(
+                    'UPDATE users SET balance = balance + $1 WHERE id = $2',
+                    [amountPaise, transaction.user_id]
+                );
+                logger.info(`PayPal payment captured for transaction ${internal_id} - user ${transaction.user_id}`);
+                emailService.emailTopupConfirmed(transaction.user_id, (amountPaise / 100).toFixed(0)).catch(() => { });
+                resumeGracePeriodDatabases(transaction.user_id).catch(() => { });
+            } else {
+                logger.info(`PayPal transaction ${internal_id} already processed or not pending.`);
+            }
+            await client.query('COMMIT');
+        } catch (err) {
+            await client.query('ROLLBACK');
+            throw err;
+        } finally {
+            client.release();
+        }
+
+        return res.json({ status: 'success' });
+    } catch (err) {
+        logger.error('PayPal capture failed', err);
+        return res.status(500).json({ error: 'PayPal capture failed' });
     }
 };
 
