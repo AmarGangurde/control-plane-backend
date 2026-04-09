@@ -151,7 +151,8 @@ export const listDatabases = async (req, res) => {
                     url: maskUrl(db.url),
                     db_password: '••••••••',
                     internalIp,
-                    internalPort
+                    internalPort,
+                    containerPort: internalData?.targetPort || null
                 };
             }
 
@@ -161,7 +162,8 @@ export const listDatabases = async (req, res) => {
                 db_password: '••••••••',
                 status: currentStatus || db.status,
                 internalIp,
-                internalPort
+                internalPort,
+                containerPort: internalData?.targetPort || null
             };
         }));
 
@@ -196,7 +198,8 @@ export const getDatabase = async (req, res) => {
         status,
         metrics,
         internalIp,
-        internalPort
+        internalPort,
+        containerPort: internalData?.targetPort || null
     });
 };
 

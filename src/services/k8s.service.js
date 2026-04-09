@@ -503,7 +503,8 @@ class K8sService {
       const svc = res.body || res;
       return {
         ip: svc.spec?.clusterIP || null,
-        port: svc.spec?.ports?.[0]?.port || null
+        port: svc.spec?.ports?.[0]?.port || null,
+        targetPort: svc.spec?.ports?.[0]?.targetPort || null
       };
     } catch (err) {
       if (this._getErrorCode(err) === 404) return null;

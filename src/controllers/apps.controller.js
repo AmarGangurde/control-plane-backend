@@ -177,12 +177,13 @@ export const listApps = async (req, res) => {
       const internalData = await k8sService.getInternalIP(resourceName, app.namespace);
       const internalIp = internalData?.ip || null;
       const internalPort = internalData?.port || null;
+      const containerPort = internalData?.targetPort || null;
 
       // If k8s has no pods yet (unknown) — trust the DB status.
       // This covers the reconciliation window after a server restore, and stopped apps.
-      if (currentStatus === 'unknown') return { ...app, internalIp, internalPort };
+      if (currentStatus === 'unknown') return { ...app, internalIp, internalPort, containerPort };
 
-      return { ...app, status: currentStatus || app.status, internalIp, internalPort };
+      return { ...app, status: currentStatus || app.status, internalIp, internalPort, containerPort };
     }));
 
     res.json(syncedApps);
@@ -207,7 +208,8 @@ export const getApp = async (req, res) => {
     const internalData = await k8sService.getInternalIP(resourceName, app.namespace);
     const internalIp = internalData?.ip || null;
     const internalPort = internalData?.port || null;
-    res.json({ ...app, status, metrics, internalIp, internalPort });
+    const containerPort = internalData?.targetPort || null;
+    res.json({ ...app, status, metrics, internalIp, internalPort, containerPort });
   } catch (err) {
     logger.error('Error fetching app details', err?.message || err);
     res.status(500).json({ error: 'Failed to fetch app details' });
