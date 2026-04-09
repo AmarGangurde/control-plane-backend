@@ -487,6 +487,29 @@ class K8sService {
     });
   }
 
+  /**
+   * Returns the stable ClusterIP for a given service.
+   */
+  async getInternalIP(name, namespace) {
+    try {
+      const res = await withRetry(
+        () => this.core.readNamespacedService({ name, namespace }),
+        { label: `readService(${name})` }
+      ).catch(() => null);
+
+      if (!res) return null;
+
+      // The response from k8s client-node can be either the object itself or wrapped in { body }
+      const svc = res.body || res;
+      return svc.spec?.clusterIP || null;
+    } catch (err) {
+      if (this._getErrorCode(err) === 404) return null;
+      logger.error('Error fetching service ClusterIP', { name, namespace, err: err.message });
+      return null;
+    }
+  }
+
+
 
   async getAppStatus(name, namespace) {
     const res = await withRetry(
