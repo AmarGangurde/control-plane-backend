@@ -139,7 +139,9 @@ export const listDatabases = async (req, res) => {
 
             // Get real-time status from k8s
             const currentStatus = await k8sService.getAppStatus(resourceName, db.namespace);
-            const internalIp = await k8sService.getInternalIP(resourceName, db.namespace);
+            const internalData = await k8sService.getInternalIP(resourceName, db.namespace);
+            const internalIp = internalData?.ip || null;
+            const internalPort = internalData?.port || null;
 
             // If k8s has no pods yet (unknown) — trust the DB status.
             // This covers the reconciliation window after a server restore, and stopped DBs.
@@ -148,7 +150,8 @@ export const listDatabases = async (req, res) => {
                     ...db,
                     url: maskUrl(db.url),
                     db_password: '••••••••',
-                    internalIp
+                    internalIp,
+                    internalPort
                 };
             }
 
@@ -157,7 +160,8 @@ export const listDatabases = async (req, res) => {
                 url: maskUrl(db.url),
                 db_password: '••••••••',
                 status: currentStatus || db.status,
-                internalIp
+                internalIp,
+                internalPort
             };
         }));
 
@@ -176,7 +180,9 @@ export const getDatabase = async (req, res) => {
 
     let status = await k8sService.getAppStatus(resourceName, db.namespace);
     const metrics = await k8sService.getPodMetrics(db.namespace, resourceName);
-    const internalIp = await k8sService.getInternalIP(resourceName, db.namespace);
+    const internalData = await k8sService.getInternalIP(resourceName, db.namespace);
+    const internalIp = internalData?.ip || null;
+    const internalPort = internalData?.port || null;
 
     // If k8s says unknown but our DB record says stopped, keep it as stopped
     if (status === 'unknown' && db.status === 'stopped') {
@@ -189,7 +195,8 @@ export const getDatabase = async (req, res) => {
         db_password: '••••••••',
         status,
         metrics,
-        internalIp
+        internalIp,
+        internalPort
     });
 };
 

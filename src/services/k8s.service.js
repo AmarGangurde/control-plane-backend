@@ -501,10 +501,13 @@ class K8sService {
 
       // The response from k8s client-node can be either the object itself or wrapped in { body }
       const svc = res.body || res;
-      return svc.spec?.clusterIP || null;
+      return {
+        ip: svc.spec?.clusterIP || null,
+        port: svc.spec?.ports?.[0]?.port || null
+      };
     } catch (err) {
       if (this._getErrorCode(err) === 404) return null;
-      logger.error('Error fetching service ClusterIP', { name, namespace, err: err.message });
+      logger.error('Error fetching service IP/port', { name, namespace, err: err.message });
       return null;
     }
   }
