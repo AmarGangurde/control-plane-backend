@@ -5,7 +5,8 @@ export const insertApp = async (data) => {
     id, name, namespace, image, url, userId, planId,
     containerPort, env, command, args, replicas = 1,
     type = 'app', storage = null, storage_hourly_rate = 0,
-    db_host = null, db_port = null, db_user = null, db_password = null, db_name = null
+    db_host = null, db_port = null, db_user = null, db_password = null, db_name = null,
+    loopbackBind = false
   } = data;
 
   const envStr = env ? JSON.stringify(env) : null;
@@ -17,14 +18,14 @@ export const insertApp = async (data) => {
       id, name, namespace, image, url, user_id, plan_id, 
       container_port, env, command, args, type, storage, storage_hourly_rate,
       db_host, db_port, db_user, db_password, db_name,
-      replicas, last_charged_at
+      replicas, loopback_bind, last_charged_at
     )
-    VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19, $20, NOW())
+    VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19, $20, $21, NOW())
   `, [
     id, name, namespace, image, url, userId, planId,
     containerPort, envStr, cmdStr, argStr, type, storage, storage_hourly_rate,
     db_host, db_port, db_user, db_password, db_name,
-    replicas
+    replicas, loopbackBind
   ]);
 };
 
@@ -62,7 +63,7 @@ export const deleteAppById = async (id) => {
 export const updateAppDetails = async (id, data) => {
   const {
     image, containerPort, env, command, args, replicas, url,
-    db_host, db_port, db_user, db_password, db_name, status, alias
+    db_host, db_port, db_user, db_password, db_name, status, alias, loopback_bind
   } = data;
 
   const envStr = env ? JSON.stringify(env) : null;
@@ -85,6 +86,7 @@ export const updateAppDetails = async (id, data) => {
   if (db_password !== undefined) { updates.push(`db_password = $${params.push(db_password)}`); }
   if (db_name !== undefined) { updates.push(`db_name = $${params.push(db_name)}`); }
   if (status !== undefined) { updates.push(`status = $${params.push(status)}`); }
+  if (loopback_bind !== undefined) { updates.push(`loopback_bind = $${params.push(loopback_bind)}`); }
   // alias can be set to NULL (removal) — use explicit null sentinel via hasOwnProperty
   if (Object.prototype.hasOwnProperty.call(data, 'alias')) {
     updates.push(`alias = $${params.push(alias ?? null)}`);

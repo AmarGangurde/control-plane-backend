@@ -2,12 +2,19 @@ import rateLimit from 'express-rate-limit';
 import { RedisStore } from 'rate-limit-redis';
 import { redis } from '../lib/redis.js';
 
-// Global rate limiter — 120 requests/minute per IP, shared across all pods via Redis
+// Global rate limiter — 300 requests/minute per AUTHENTICATED USER, shared across all pods via Redis.
+// Keying by user ID (not IP) prevents multi-tenant cross-contamination where multiple
+// tenants behind the same NAT/proxy would otherwise share a single quota bucket.
+// Falls back to IP for unauthenticated requests (login, public endpoints).
 export const rateLimiter = rateLimit({
   windowMs: 60 * 1000,
-  max: 120,
+  max: 300,
   standardHeaders: true,
   legacyHeaders: false,
+  keyGenerator: (req) => {
+    // req.user is populated by the auth middleware for authenticated routes
+    return req.user?.id ? `user:${req.user.id}` : req.ip;
+  },
   store: new RedisStore({
     sendCommand: (...args) => redis.call(...args),
     prefix: 'rl:global:',
@@ -15,7 +22,7 @@ export const rateLimiter = rateLimit({
   handler: (_req, res) => {
     res.status(429).json({
       error: 'Rate limit exceeded',
-      limit: 120,
+      limit: 300,
       window: '1 minute',
     });
   },

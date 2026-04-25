@@ -144,6 +144,7 @@ async function reconcileApp(app, resourceName, plan, parse) {
     const command = parse(app.command);
     const args = parse(app.args);
     const replicas = app.replicas || 1;
+    const loopbackBind = app.loopback_bind || false;
 
     // Determine if image is public; if not, sync stored registry secret
     let hasRegistrySecret = false;
@@ -163,8 +164,8 @@ async function reconcileApp(app, resourceName, plan, parse) {
         }
     }
 
-    // Deployment (idempotent)
-    await k8sService.createDeployment({
+    // Deployment (idempotent) — returns { serviceTargetPort } for sidecar awareness
+    const { serviceTargetPort } = await k8sService.createDeployment({
         name: resourceName,
         namespace: app.namespace,
         image,
@@ -175,14 +176,15 @@ async function reconcileApp(app, resourceName, plan, parse) {
         args,
         replicas,
         hasRegistrySecret,
+        loopbackBind,
     });
 
-    // Service (idempotent)
+    // Service (idempotent) — target the sidecar port if one was injected
     await k8sService.createService({
         name: resourceName,
         namespace: app.namespace,
         servicePort: 80,
-        containerPort,
+        containerPort: serviceTargetPort,
     });
 
     // Ingress — reconstruct the host from the stored URL

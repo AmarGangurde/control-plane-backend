@@ -202,6 +202,7 @@ const initDb = async (retries = 5) => {
         ALTER TABLE apps ADD COLUMN IF NOT EXISTS grace_started_at TIMESTAMPTZ;
         ALTER TABLE reserved_aliases ADD COLUMN IF NOT EXISTS last_warning_sent_at TIMESTAMPTZ;
         ALTER TABLE users ADD COLUMN IF NOT EXISTS low_balance_warned_at TIMESTAMPTZ;
+        ALTER TABLE apps ADD COLUMN IF NOT EXISTS loopback_bind BOOLEAN NOT NULL DEFAULT FALSE;
       EXCEPTION WHEN duplicate_column THEN NULL;
       END $$;
     `);

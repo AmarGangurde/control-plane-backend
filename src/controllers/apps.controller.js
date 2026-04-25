@@ -64,8 +64,16 @@ export const createApp = async (req, res) => {
 
     // Auto-detect port from image if not provided
     let containerPort = port;
+    let loopbackBind = false;
     if (!containerPort) {
-      containerPort = await imageService.getExposedPort(image, user.docker_username, user.docker_token);
+      const detected = await imageService.getExposedPort(image, user.docker_username, user.docker_token);
+      // getExposedPort now returns { port, loopbackBind } — handle both shapes for safety
+      if (detected && typeof detected === 'object') {
+        containerPort = detected.port;
+        loopbackBind = detected.loopbackBind || false;
+      } else {
+        containerPort = detected || 80;
+      }
     }
     const servicePort = 80;
 
@@ -98,7 +106,8 @@ export const createApp = async (req, res) => {
       env,
       command,
       args,
-      replicas: finalReplicas
+      replicas: finalReplicas,
+      loopbackBind,
     });
 
     // 2. Start billing (reserves 1 hour, sets status to 'running')
@@ -132,8 +141,25 @@ export const createApp = async (req, res) => {
         hasRegistrySecret = true;
       }
 
-      await k8sService.createDeployment({ name: resourceName, namespace, image, containerPort, plan, env, command, args, replicas: finalReplicas, hasRegistrySecret });
-      await k8sService.createService({ name: resourceName, namespace, servicePort, containerPort });
+      const { serviceTargetPort } = await k8sService.createDeployment({
+        name: resourceName,
+        namespace,
+        image,
+        containerPort,
+        plan,
+        env,
+        command,
+        args,
+        replicas: finalReplicas,
+        hasRegistrySecret,
+        loopbackBind,
+      });
+      await k8sService.createService({
+        name: resourceName,
+        namespace,
+        servicePort: servicePort,
+        containerPort: serviceTargetPort,
+      });
       await k8sService.createIngress({ name: resourceName, namespace, host, port: servicePort });
     } catch (k8sErr) {
       logger.error('K8s creation failed, rolling back', k8sErr);
@@ -167,23 +193,35 @@ export const listApps = async (req, res) => {
   try {
     const apps = await listAppsByUserId(req.user.id, 'app');
 
-    // Sync status with k8s for each app to ensure dashboard accuracy
+    // Sync status, metrics, and internal IP with k8s for each app.
+    // All k8s reads hit the 10s TTL cache so this is safe at any poll frequency.
     const syncedApps = await Promise.all(apps.map(async (app) => {
       const shortId = app.id.split('-')[0];
       const resourceName = `app-${shortId}`;
 
-      // Get real-time status from k8s
-      const currentStatus = await k8sService.getAppStatus(resourceName, app.namespace);
-      const internalData = await k8sService.getInternalIP(resourceName, app.namespace);
+      const [currentStatus, metrics, internalData] = await Promise.all([
+        k8sService.getAppStatus(resourceName, app.namespace),
+        k8sService.getPodMetrics(app.namespace, resourceName),
+        k8sService.getInternalIP(resourceName, app.namespace),
+      ]);
+
       const internalIp = internalData?.ip || null;
       const internalPort = internalData?.port || null;
       const containerPort = internalData?.targetPort || null;
 
       // If k8s has no pods yet (unknown) — trust the DB status.
-      // This covers the reconciliation window after a server restore, and stopped apps.
-      if (currentStatus === 'unknown') return { ...app, internalIp, internalPort, containerPort };
+      if (currentStatus === 'unknown') {
+        return { ...app, internalIp, internalPort, containerPort, metrics: metrics || { cpu: '0', memory: '0' } };
+      }
 
-      return { ...app, status: currentStatus || app.status, internalIp, internalPort, containerPort };
+      return {
+        ...app,
+        status: currentStatus || app.status,
+        internalIp,
+        internalPort,
+        containerPort,
+        metrics: metrics || { cpu: '0', memory: '0' },
+      };
     }));
 
     res.json(syncedApps);
@@ -261,6 +299,7 @@ export const updateApp = async (req, res) => {
     const newCommand = command !== undefined ? command : (app.command || null);
     const newArgs = args !== undefined ? args : (app.args || null);
     let newReplicas = replicas !== undefined ? parseInt(replicas, 10) : (app.replicas || 1);
+    let loopbackBind = app.loopback_bind || false;
 
     // Enforce Tiny plan restriction
     if (app.plan_id === 'p-tiny') {
@@ -269,7 +308,13 @@ export const updateApp = async (req, res) => {
 
     // Auto-detect port if image changed but port was not explicitly provided
     if (image && image !== app.image && port === undefined) {
-      newPort = await imageService.getExposedPort(image, req.user?.docker_username, req.user?.docker_token);
+      const detected = await imageService.getExposedPort(image, req.user?.docker_username, req.user?.docker_token);
+      if (detected && typeof detected === 'object') {
+        newPort = detected.port;
+        loopbackBind = detected.loopbackBind || false;
+      } else {
+        newPort = detected || 80;
+      }
     }
 
     const shortId = app.id.split('-')[0];
@@ -293,6 +338,7 @@ export const updateApp = async (req, res) => {
       args: newArgs,
       replicas: newReplicas,
       hasRegistrySecret,
+      loopbackBind,
     });
 
     await updateAppDetails(app.id, {
@@ -302,6 +348,7 @@ export const updateApp = async (req, res) => {
       command: newCommand,
       args: newArgs,
       replicas: newReplicas,
+      loopback_bind: loopbackBind,
     });
 
     return res.json({

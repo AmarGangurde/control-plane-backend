@@ -29,7 +29,7 @@ class ImageService {
                     }).toString();
                 } catch (fallbackErr) {
                     logger.warn(`Public skopeo check also failed: ${fallbackErr.message}. Falling back to default port 80.`);
-                    return 80;
+                    return { port: 80, loopbackBind: false };
                 }
             }
 
@@ -45,16 +45,20 @@ class ImageService {
 
             const ports = Object.keys(exposedPorts);
             if (ports.length > 0) {
-                const firstPort = ports[0].split('/')[0];
-                logger.info(`Detected exposed port for ${imageName}: ${firstPort}`);
-                return parseInt(firstPort, 10);
+                // Key format can be "3000/tcp" or "127.0.0.1:3000/tcp" (loopback-bound)
+                const firstPortKey = ports[0];
+                const portPart = firstPortKey.split('/')[0]; // e.g. "3000" or "127.0.0.1:3000"
+                const loopbackBind = portPart.startsWith('127.0.0.1:') || portPart.startsWith('::1:');
+                const port = parseInt(portPart.split(':').pop(), 10);
+                logger.info(`Detected exposed port for ${imageName}: ${port} (loopbackBind=${loopbackBind})`);
+                return { port, loopbackBind };
             }
 
             logger.warn(`No exposed ports found in metadata for ${imageName}, defaulting to 80`);
-            return 80;
+            return { port: 80, loopbackBind: false };
         } catch (err) {
             logger.error(`Critical error in port detection for ${imageName}: ${err.message}`);
-            return 80;
+            return { port: 80, loopbackBind: false };
         }
     }
 

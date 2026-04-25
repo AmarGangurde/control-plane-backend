@@ -3,6 +3,30 @@ import streamModule from 'stream';
 import logger from '../utils/logger.js';
 import { withRetry } from '../utils/retry.js';
 
+// ── Simple in-process TTL cache ──────────────────────────────────────────────
+// Prevents hammering the k8s API on every 15-second poll cycle.
+// Keys: "namespace/name" · Values: { data, expiresAt }
+const CACHE_TTL_MS = 10_000; // 10 seconds
+const _cache = new Map();
+
+function cacheGet(key) {
+  const entry = _cache.get(key);
+  if (!entry) return undefined;
+  if (Date.now() > entry.expiresAt) { _cache.delete(key); return undefined; }
+  return entry.data;
+}
+
+function cacheSet(key, data, ttl = CACHE_TTL_MS) {
+  _cache.set(key, { data, expiresAt: Date.now() + ttl });
+}
+
+function cacheInvalidate(namespace, name) {
+  const prefix = `${namespace}/${name}`;
+  for (const key of _cache.keys()) {
+    if (key.startsWith(prefix)) _cache.delete(key);
+  }
+}
+
 class K8sService {
   constructor() {
     const kc = new k8s.KubeConfig();
@@ -65,8 +89,13 @@ class K8sService {
   /**
    * Returns CPU + memory for the first pod matching app=<name> in the given namespace.
    * Falls back to zero values if metrics-server is not installed or pod has no metrics yet.
+   * Results are cached for CACHE_TTL_MS to reduce k8s API call volume.
    */
   async getPodMetrics(namespace, name) {
+    const cacheKey = `metrics:${namespace}/${name}`;
+    const cached = cacheGet(cacheKey);
+    if (cached !== undefined) return cached;
+
     try {
       const res = await this.metrics.listNamespacedCustomObject({
         group: 'metrics.k8s.io',
@@ -78,7 +107,9 @@ class K8sService {
 
       const items = res.items || [];
       if (!items.length) {
-        return { cpu: '0', memory: '0' };
+        const zero = { cpu: '0', memory: '0' };
+        cacheSet(cacheKey, zero);
+        return zero;
       }
 
       let totalCpuNano = 0n;
@@ -94,18 +125,20 @@ class K8sService {
         }
       }
 
-      // Return in a format the frontend can parse easily (millicores and MiB)
-      // Using 'm' for CPU and 'Mi' for memory as standard K8s strings
       const totalCpuMillis = Number(totalCpuNano / 1000000n);
       const totalMemMiB = Number(totalMemBytes / (1024n * 1024n));
 
-      return {
+      const result = {
         cpu: `${totalCpuMillis}m`,
         memory: `${totalMemMiB}Mi`
       };
+      cacheSet(cacheKey, result);
+      return result;
     } catch (err) {
       logger.error('Error fetching metrics', err?.message || err);
-      return { cpu: '0', memory: '0' };
+      const zero = { cpu: '0', memory: '0' };
+      cacheSet(cacheKey, zero, 3000); // short cache on error
+      return zero;
     }
   }
 
@@ -167,8 +200,11 @@ class K8sService {
 
   // ── Deployments ────────────────────────────────────────────────────────────
 
-  async createDeployment({ name, namespace, image, containerPort, plan, env, command, args, replicas = 1, hasRegistrySecret = false }) {
-    const spec = this._buildPodSpec({ image, containerPort, plan, env, command, args, hasRegistrySecret });
+  async createDeployment({ name, namespace, image, containerPort, plan, env, command, args, replicas = 1, hasRegistrySecret = false, loopbackBind = false }) {
+    const spec = this._buildPodSpec({ image, containerPort, plan, env, command, args, hasRegistrySecret, loopbackBind });
+    // If a sidecar was injected, route the Service to its port instead
+    const serviceTargetPort = spec._sidecarPort || containerPort;
+    delete spec._sidecarPort; // clean k8s-incompatible field before sending
     await withRetry(() => this.apps.createNamespacedDeployment({
       namespace,
       body: {
@@ -188,9 +224,12 @@ class K8sService {
         if (Number(this._getErrorCode(err)) === 409) return;
         throw err;
       });
+    // Return the effective service target port so callers can create the Service correctly
+    return { serviceTargetPort };
   }
 
-  async updateDeployment({ name, namespace, image, containerPort, plan, env, command, args, replicas, hasRegistrySecret = false }) {
+  async updateDeployment({ name, namespace, image, containerPort, plan, env, command, args, replicas, hasRegistrySecret = false, loopbackBind = false }) {
+    cacheInvalidate(namespace, name);
     const current = await withRetry(
       () => this.apps.readNamespacedDeployment({ name, namespace }),
       { label: `readDeployment(${name})` }
@@ -204,7 +243,9 @@ class K8sService {
       command: command !== undefined ? command : null,
       args: args !== undefined ? args : null,
       hasRegistrySecret,
+      loopbackBind,
     });
+    delete newSpec._sidecarPort;
 
     current.spec.template.spec = { ...current.spec.template.spec, ...newSpec };
     if (replicas !== undefined) current.spec.replicas = parseInt(replicas, 10);
@@ -216,6 +257,7 @@ class K8sService {
   }
 
   async deleteNamespacedDeployment(name, namespace) {
+    cacheInvalidate(namespace, name);
     await withRetry(() => this.apps.deleteNamespacedDeployment({ name, namespace }), {
       label: `deleteDeployment(${name})`,
       retryIf: (err) => err?.body?.code !== 404,
@@ -491,23 +533,35 @@ class K8sService {
    * Returns the stable ClusterIP for a given service.
    */
   async getInternalIP(name, namespace) {
+    const cacheKey = `ip:${namespace}/${name}`;
+    const cached = cacheGet(cacheKey);
+    if (cached !== undefined) return cached;
+
     try {
       const res = await withRetry(
         () => this.core.readNamespacedService({ name, namespace }),
         { label: `readService(${name})` }
       ).catch(() => null);
 
-      if (!res) return null;
+      if (!res) {
+        cacheSet(cacheKey, null, 3000);
+        return null;
+      }
 
       // The response from k8s client-node can be either the object itself or wrapped in { body }
       const svc = res.body || res;
-      return {
+      const result = {
         ip: svc.spec?.clusterIP || null,
         port: svc.spec?.ports?.[0]?.port || null,
         targetPort: svc.spec?.ports?.[0]?.targetPort || null
       };
+      cacheSet(cacheKey, result);
+      return result;
     } catch (err) {
-      if (this._getErrorCode(err) === 404) return null;
+      if (this._getErrorCode(err) === 404) {
+        cacheSet(cacheKey, null, 3000);
+        return null;
+      }
       logger.error('Error fetching service IP/port', { name, namespace, err: err.message });
       return null;
     }
@@ -516,13 +570,20 @@ class K8sService {
 
 
   async getAppStatus(name, namespace) {
+    const cacheKey = `status:${namespace}/${name}`;
+    const cached = cacheGet(cacheKey);
+    if (cached !== undefined) return cached;
+
     const res = await withRetry(
       () => this.core.listNamespacedPod({ namespace, labelSelector: `app=${name}` }),
       { label: `listPods(${name})` }
     ).catch(() => ({ items: [] }));
 
     const pods = res.items || res.body?.items || [];
-    if (!pods.length) return 'unknown';
+    if (!pods.length) {
+      // Don't cache 'unknown' — it may just be transient pod not found
+      return 'unknown';
+    }
 
     const statuses = pods.map(pod => {
       const phase = pod.status.phase;
@@ -537,10 +598,15 @@ class K8sService {
       return 'unknown';
     });
 
-    if (statuses.includes('failed')) return 'failed';
-    if (statuses.includes('deploying')) return 'deploying';
-    if (statuses.includes('running')) return 'running';
-    return 'unknown';
+    let status = 'unknown';
+    if (statuses.includes('failed')) status = 'failed';
+    else if (statuses.includes('deploying')) status = 'deploying';
+    else if (statuses.includes('running')) status = 'running';
+
+    // Cache stable statuses longer; cache transitional shorter
+    const ttl = status === 'running' ? CACHE_TTL_MS : 4000;
+    cacheSet(cacheKey, status, ttl);
+    return status;
   }
 
   async getPodName(name, namespace) {
@@ -632,16 +698,28 @@ class K8sService {
 
   // ── Private helpers ─────────────────────────────────────────────────────────
 
-  _buildPodSpec({ image, containerPort, plan, env, command, args, hasRegistrySecret = false }) {
+  _buildPodSpec({ image, containerPort, plan, env, command, args, hasRegistrySecret = false, loopbackBind = false }) {
     const cpuRequest = plan?.cpu_request || '10m';
     const cpuLimit = plan?.cpu || '100m';
     const memoryRequest = plan?.memory_request || plan?.memory || '128Mi';
     const memoryLimit = plan?.memory || '128Mi';
 
+    // When loopbackBind is true the app binds to 127.0.0.1 which k8s cannot reach
+    // from the service proxy. We inject a tiny nginx sidecar that listens on
+    // 0.0.0.0:<containerPort> and forwards to 127.0.0.1:<containerPort>.
+    // The K8s Service's targetPort points to the sidecar port.
+    const appPort = loopbackBind ? containerPort + 1 : containerPort;
+    // The sidecar listens on containerPort (what the Service targets);
+    // the app container is shifted to containerPort+1 internally.
+    // Actually simpler: keep app on containerPort, sidecar on a fixed proxy port.
+    // We use a dedicated sidecar port (8080 default, or containerPort itself if !=8080)
+    const SIDECAR_PORT = containerPort === 8080 ? 8081 : 8080;
+
     const container = {
       name: 'app',
       image,
-      ports: [{ containerPort }],
+      // When loopback sidecar is used the Service targets SIDECAR_PORT not containerPort
+      ports: [{ containerPort, name: 'app-internal' }],
       resources: {
         requests: { cpu: cpuRequest, memory: memoryRequest },
         limits: { cpu: cpuLimit, memory: memoryLimit },
@@ -657,6 +735,41 @@ class K8sService {
       containers: [container],
     };
 
+    if (loopbackBind) {
+      // Nginx sidecar: listens on 0.0.0.0:SIDECAR_PORT, proxies to 127.0.0.1:containerPort
+      const nginxConf = [
+        'server {',
+        `  listen 0.0.0.0:${SIDECAR_PORT};`,
+        '  location / {',
+        `    proxy_pass http://127.0.0.1:${containerPort};`,
+        '    proxy_set_header Host $host;',
+        '    proxy_set_header X-Real-IP $remote_addr;',
+        '    proxy_read_timeout 60s;',
+        '  }',
+        '}',
+      ].join('\n');
+
+      podSpec.containers.push({
+        name: 'proxy-sidecar',
+        image: 'nginx:alpine',
+        ports: [{ containerPort: SIDECAR_PORT, name: 'proxy' }],
+        resources: {
+          requests: { cpu: '5m', memory: '16Mi' },
+          limits: { cpu: '50m', memory: '32Mi' },
+        },
+        command: ['sh', '-c'],
+        args: [
+          // Write the nginx config then start nginx in foreground
+          `printf '%s' '${nginxConf.replace(/'/g, "'\"'\"'")}' > /tmp/proxy.conf && nginx -c /tmp/proxy.conf -g 'daemon off;'`,
+        ],
+        securityContext: { allowPrivilegeEscalation: false },
+      });
+
+      // Record the sidecar port so callers know which port the Service should target
+      podSpec._sidecarPort = SIDECAR_PORT;
+      logger.info(`Loopback sidecar injected: Service will target port ${SIDECAR_PORT}, app listens on ${containerPort}`);
+    }
+
     // Only include the registry secret if the user actually provided credentials.
     // If we always include 'user-registry-key' and it exists with bad/expired creds,
     // Docker Hub returns 401 — even for public images.
@@ -670,6 +783,22 @@ class K8sService {
     }
 
     return podSpec;
+  }
+
+  /**
+   * Returns true if the image string suggests the app binds to a loopback address.
+   * This happens when image tags or names embed an address like 127.0.0.1 or localhost,
+   * OR when the caller explicitly signals it (loopbackBind flag from image inspection).
+   */
+  _isLoopbackImage(image) {
+    if (!image) return false;
+    const lower = image.toLowerCase();
+    return (
+      lower.includes('127.0.0.1') ||
+      // NOTE: 'localhost' as a registry prefix is valid (e.g. localhost/my-image)
+      // so we only flag it when it appears in the tag portion after a colon
+      /:[^:]*localhost/.test(lower)
+    );
   }
 
   _getErrorCode(err) {
