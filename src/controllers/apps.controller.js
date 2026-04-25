@@ -64,13 +64,14 @@ export const createApp = async (req, res) => {
 
     // Auto-detect port from image if not provided
     let containerPort = port;
-    let loopbackBind = false;
+    let loopbackBind = req.body.loopbackBind === true; // explicit user override
     if (!containerPort) {
       const detected = await imageService.getExposedPort(image, user.docker_username, user.docker_token);
       // getExposedPort now returns { port, loopbackBind } — handle both shapes for safety
       if (detected && typeof detected === 'object') {
         containerPort = detected.port;
-        loopbackBind = detected.loopbackBind || false;
+        // Auto-detected loopback takes precedence only if user didn't explicitly set the flag
+        if (!req.body.loopbackBind) loopbackBind = detected.loopbackBind || false;
       } else {
         containerPort = detected || 80;
       }
@@ -285,6 +286,8 @@ export const updateApp = async (req, res) => {
     }
 
     const { image, port, env, command, args, replicas } = req.body;
+    // loopbackBind can be explicitly set by the user from the Advanced toggle
+    const explicitLoopbackBind = req.body.loopbackBind;
 
     if (!image && !port && env === undefined && command === undefined && args === undefined && replicas === undefined) {
       return res.status(400).json({ error: 'At least one field must be provided' });
@@ -299,7 +302,13 @@ export const updateApp = async (req, res) => {
     const newCommand = command !== undefined ? command : (app.command || null);
     const newArgs = args !== undefined ? args : (app.args || null);
     let newReplicas = replicas !== undefined ? parseInt(replicas, 10) : (app.replicas || 1);
-    let loopbackBind = app.loopback_bind || false;
+    // loopbackBind priority:
+    //  1. Explicit user toggle from req.body (highest — user made a deliberate choice)
+    //  2. Auto-detected from new image inspection (middle)
+    //  3. Stored DB value from previous deploy (lowest)
+    let loopbackBind = explicitLoopbackBind !== undefined
+      ? Boolean(explicitLoopbackBind)
+      : (app.loopback_bind || false);
 
     // Enforce Tiny plan restriction
     if (app.plan_id === 'p-tiny') {
@@ -311,7 +320,8 @@ export const updateApp = async (req, res) => {
       const detected = await imageService.getExposedPort(image, req.user?.docker_username, req.user?.docker_token);
       if (detected && typeof detected === 'object') {
         newPort = detected.port;
-        loopbackBind = detected.loopbackBind || false;
+        // Only override loopbackBind from detection if user hasn't toggled it explicitly
+        if (explicitLoopbackBind === undefined) loopbackBind = detected.loopbackBind || false;
       } else {
         newPort = detected || 80;
       }
