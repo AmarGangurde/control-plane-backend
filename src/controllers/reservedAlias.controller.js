@@ -137,7 +137,7 @@ export const assignAlias = async (req, res) => {
     const { rows: appRows } = await db.query('SELECT * FROM apps WHERE id = $1 AND user_id = $2', [appId, req.user.id]);
     const app = appRows[0];
     if (!app) return res.status(404).json({ error: 'App not found' });
-    if (app.type !== 'app') return res.status(400).json({ error: 'Can only assign alias to apps, not databases.' });
+    if (app.type !== 'app' && app.type !== 'service') return res.status(400).json({ error: 'Can only assign alias to apps and services, not databases.' });
 
     // If the target app already has a free alias set, clear it first (1 alias per pod rule)
     if (app.alias && app.alias !== ra.slug) {
