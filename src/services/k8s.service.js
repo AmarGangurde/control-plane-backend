@@ -1,5 +1,6 @@
 import * as k8s from '@kubernetes/client-node';
 import streamModule from 'stream';
+import fs from 'node:fs';
 import logger from '../utils/logger.js';
 import { withRetry } from '../utils/retry.js';
 
@@ -49,6 +50,23 @@ class K8sService {
         loaded = true;
         break;
       } catch (_) { /* try next */ }
+    }
+
+    if (!loaded) {
+      // Inside a Kubernetes pod, prefer the mounted service account token.
+      // loadFromCluster() reads /var/run/secrets/kubernetes.io/serviceaccount/
+      // which is always correct. loadFromDefault() can accidentally pick up
+      // stale env-based configs and send wrong credentials → 403 on exec.
+      const SA_TOKEN = '/var/run/secrets/kubernetes.io/serviceaccount/token';
+      if (fs.existsSync(SA_TOKEN)) {
+        try {
+          kc.loadFromCluster();
+          logger.info('Loaded KubeConfig from in-cluster service account');
+          loaded = true;
+        } catch (err) {
+          logger.warn('loadFromCluster() failed despite SA token existing:', err.message);
+        }
+      }
     }
 
     if (!loaded) {
@@ -715,7 +733,7 @@ class K8sService {
     const exec = new k8s.Exec(this.kc);
 
     const { PassThrough } = streamModule;
-    const stdin  = new PassThrough();
+    const stdin = new PassThrough();
     const stdout = new PassThrough();
     const stderr = new PassThrough();
 
@@ -728,8 +746,8 @@ class K8sService {
     const stop = () => {
       if (stopped) return;
       stopped = true;
-      try { stdin.end(); } catch (_) {}
-      try { wsReq?.abort?.(); } catch (_) {}
+      try { stdin.end(); } catch (_) { }
+      try { wsReq?.abort?.(); } catch (_) { }
       onExit && onExit();
     };
 
@@ -747,15 +765,37 @@ class K8sService {
         logger.info(`Shell session ended for ${podName}:${container}`, status);
         stop();
       }
-    );
+    ).catch(err => {
+      // Enrich the error so frontend shows something actionable
+      const statusCode = err?.message?.match(/(\d{3})/)?.[1];
+      if (statusCode === '403') {
+        throw new Error(
+          `Kubernetes exec forbidden (403) — pod: ${podName}, container: ${container}, ` +
+          `namespace: ${namespace}. Verify ClusterRole has pods/exec:create.`
+        );
+      }
+      throw err;
+    });
 
     const write = (data) => {
       if (!stopped) stdin.write(data);
     };
 
+    /**
+     * Resize the PTY by sending a binary frame on ResizeStream (channel 4).
+     * Payload: [0x04, ...JSON({Width, Height})]
+     * This is the official Kubernetes exec resize protocol.
+     */
     const resize = (cols, rows) => {
-      // k8s.Exec exposes resizeTty if supported
-      try { exec.resizeTtySize?.(wsReq, cols, rows); } catch (_) {}
+      try {
+        if (!stopped && wsReq && wsReq.readyState === 1 /* WebSocket.OPEN */) {
+          const json = JSON.stringify({ Width: Math.floor(cols), Height: Math.floor(rows) });
+          const buf = Buffer.alloc(json.length + 1);
+          buf.writeUInt8(4, 0); // channel 4 = ResizeStream
+          Buffer.from(json, 'utf8').copy(buf, 1);
+          wsReq.send(buf);
+        }
+      } catch (_) { }
     };
 
     return { write, resize, stop };
@@ -984,3 +1024,4 @@ class K8sService {
 }
 
 export default new K8sService();
+
