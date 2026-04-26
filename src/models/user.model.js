@@ -42,3 +42,8 @@ export const updateGithubId = async (id, githubId) => {
     await db.query('UPDATE users SET github_id = $1 WHERE id = $2', [githubId, id]);
     return getUserById(id);
 };
+
+export const getUserByAgentToken = async (token) => {
+    const { rows } = await db.query('SELECT * FROM users WHERE agent_token = $1', [token]);
+    return rows[0] || null;
+};

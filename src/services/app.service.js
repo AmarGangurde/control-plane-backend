@@ -31,6 +31,19 @@ export const killAppCompletely = async (app) => {
             return true;
         }
 
+        // Service pods (OpenClaw): settle billing then delete everything including workspace PVC
+        if (app.type === 'service') {
+            await stopPodBilling(app.id, true).catch(() => {});
+            const wsPvcName = `ws-pvc-${shortId}`;
+            await k8sService.deleteNamespacedDeployment(resourceName, app.namespace);
+            await k8sService.deleteNamespacedService(resourceName, app.namespace);
+            await k8sService.deleteNamespacedIngress(resourceName, app.namespace);
+            await k8sService.deleteNamespacedPVC(wsPvcName, app.namespace);
+            await db.query("UPDATE apps SET status = 'deleted' WHERE id = $1", [app.id]);
+            logger.info('Service (OpenClaw) workspace destroyed', { id: app.id });
+            return true;
+        }
+
         // Standard apps: delete all k8s resources (including PVC if one exists)
         const pvcName = `app-data-${shortId}`; // PVC naming convention for apps that requested storage
         await k8sService.deleteNamespacedDeployment(resourceName, app.namespace);

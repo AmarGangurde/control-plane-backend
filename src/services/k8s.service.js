@@ -218,8 +218,8 @@ class K8sService {
 
   // ── Deployments ────────────────────────────────────────────────────────────
 
-  async createDeployment({ name, namespace, image, containerPort, plan, env, command, args, replicas = 1, hasRegistrySecret = false, loopbackBind = false }) {
-    const spec = this._buildPodSpec({ image, containerPort, plan, env, command, args, hasRegistrySecret, loopbackBind });
+  async createDeployment({ name, namespace, image, containerPort, plan, env, command, args, replicas = 1, hasRegistrySecret = false, loopbackBind = false, pvcMount = null }) {
+    const spec = this._buildPodSpec({ image, containerPort, plan, env, command, args, hasRegistrySecret, loopbackBind, pvcMount });
     // If a sidecar was injected, route the Service to its port instead
     const serviceTargetPort = spec._sidecarPort || containerPort;
     delete spec._sidecarPort; // clean k8s-incompatible field before sending
@@ -246,7 +246,7 @@ class K8sService {
     return { serviceTargetPort };
   }
 
-  async updateDeployment({ name, namespace, image, containerPort, plan, env, command, args, replicas, hasRegistrySecret = false, loopbackBind = false }) {
+  async updateDeployment({ name, namespace, image, containerPort, plan, env, command, args, replicas, hasRegistrySecret = false, loopbackBind = false, pvcMount = null }) {
     cacheInvalidate(namespace, name);
     const current = await withRetry(
       () => this.apps.readNamespacedDeployment({ name, namespace }),
@@ -262,6 +262,7 @@ class K8sService {
       args: args !== undefined ? args : null,
       hasRegistrySecret,
       loopbackBind,
+      pvcMount,
     });
     delete newSpec._sidecarPort;
 
@@ -850,7 +851,7 @@ class K8sService {
 
   // ── Private helpers ─────────────────────────────────────────────────────────
 
-  _buildPodSpec({ image, containerPort, plan, env, command, args, hasRegistrySecret = false, loopbackBind = false }) {
+  _buildPodSpec({ image, containerPort, plan, env, command, args, hasRegistrySecret = false, loopbackBind = false, pvcMount = null }) {
     const cpuRequest = plan?.cpu_request || '10m';
     const cpuLimit = plan?.cpu || '100m';
     const memoryRequest = plan?.memory_request || plan?.memory || '128Mi';
@@ -937,6 +938,15 @@ class K8sService {
     if (plan?.runtime === 'kata') {
       podSpec.runtimeClassName = 'kata';
       podSpec.nodeSelector = { runtime: 'kata' };
+    }
+
+    // Attach a PVC volume + volumeMount to the first (app) container.
+    // Used by service pods (e.g. OpenClaw) that need persistent workspace storage.
+    if (pvcMount && pvcMount.claimName && pvcMount.mountPath) {
+      podSpec.volumes = podSpec.volumes || [];
+      podSpec.volumes.push({ name: 'workspace', persistentVolumeClaim: { claimName: pvcMount.claimName } });
+      podSpec.containers[0].volumeMounts = podSpec.containers[0].volumeMounts || [];
+      podSpec.containers[0].volumeMounts.push({ name: 'workspace', mountPath: pvcMount.mountPath });
     }
 
     return podSpec;

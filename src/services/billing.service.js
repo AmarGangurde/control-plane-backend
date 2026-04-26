@@ -117,7 +117,7 @@ export const stopPodBilling = async (podId, isDestroying = false) => {
         if (app.status === 'running') {
             effectiveHourlyRate += (app.hourly_rate || 0) * (app.replicas || 1);
         }
-        if (app.type === 'database') {
+        if (app.type === 'database' || app.type === 'service') {
             effectiveHourlyRate += (app.storage_hourly_rate || 0);
         }
 
@@ -152,7 +152,7 @@ export const stopPodBilling = async (podId, isDestroying = false) => {
 
         // 2. Determine target reserve
         let targetReserve = 0;
-        if (app.type === 'database' && !isDestroying) {
+        if ((app.type === 'database' || app.type === 'service') && !isDestroying) {
             targetReserve = Number(app.storage_hourly_rate || 0);
         }
 
@@ -239,7 +239,7 @@ export const runBillingLoop = async () => {
         const { rows: apps } = await lockClient.query(`
             SELECT id FROM apps 
             WHERE status = 'running' 
-            OR (type = 'database' AND status != 'deleted')
+            OR ((type = 'database' OR type = 'service') AND status != 'deleted')
         `);
 
         for (const app of apps) {
@@ -267,7 +267,7 @@ export const runBillingLoop = async () => {
                     // Pod rate is only active if 'running', multiplied by replicas
                     const podRate = currentApp.status === 'running' ? (currentApp.hourly_rate || 0) * (currentApp.replicas || 1) : 0;
                     // Storage rate is active for all non-deleted databases
-                    const storageRate = currentApp.type === 'database' ? (currentApp.storage_hourly_rate || 0) : 0;
+                    const storageRate = (currentApp.type === 'database' || currentApp.type === 'service') ? (currentApp.storage_hourly_rate || 0) : 0;
                     const effectiveHourlyRate = podRate + storageRate;
 
                     // 3. Handle Free/No-cost resources
@@ -317,7 +317,7 @@ export const runBillingLoop = async () => {
                                     // Running app — kill immediately
                                     logger.info(`Insufficient funds for running app ${currentApp.id}. Killing.`);
                                     shouldKill = true;
-                                } else if (currentApp.type === 'database') {
+                                } else if (currentApp.type === 'database' || currentApp.type === 'service') {
                                     // Stopped database — start/check 3-day grace period
                                     const GRACE_DAYS = 3;
                                     const now3 = new Date();
@@ -542,7 +542,7 @@ export const runLowBalanceWarningLoop = async () => {
             JOIN apps a ON a.user_id = u.id
             WHERE
                 (a.status = 'running')
-                OR (a.type = 'database' AND a.status != 'deleted')
+                OR ((a.type = 'database' OR a.type = 'service') AND a.status != 'deleted')
             ORDER BY u.id
         `);
 
@@ -571,7 +571,7 @@ export const runLowBalanceWarningLoop = async () => {
                     const podRate = s.app_status === 'running'
                         ? (Number(s.hourly_rate || 0) * (Number(s.replicas) || 1))
                         : 0;
-                    const storageRate = s.app_type === 'database'
+                    const storageRate = (s.app_type === 'database' || s.app_type === 'service')
                         ? Number(s.storage_hourly_rate || 0)
                         : 0;
                     const effectiveRate = podRate + storageRate;

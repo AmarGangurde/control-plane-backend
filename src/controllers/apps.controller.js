@@ -12,19 +12,51 @@ import {
 import { getPlanById } from '../models/plan.model.js';
 import { killAppCompletely } from '../services/app.service.js';
 import imageService from '../services/image.service.js';
-import { startPodBilling } from '../services/billing.service.js';
+import { startPodBilling, stopPodBilling } from '../services/billing.service.js';
 import db from '../db/db.js';
 import { withRetry } from '../utils/retry.js';
 import * as emailService from '../services/email.service.js';
 
 export const createApp = async (req, res) => {
   try {
-    const { image, port, planId = 'p-small', name, env, command, args, replicas = 1, alias } = req.body;
+    let { image, port, planId = 'p-small', name, env, command, args, replicas = 1, alias } = req.body;
+    const type = req.body.type || 'app';
     const user = req.user;
 
     if (!name) {
       return res.status(400).json({ error: 'App name is required' });
     }
+
+    // ── Service overrides (type='service') ────────────────────────────────────
+    // When launching a managed first-party service (e.g. OpenClaw Workspace)
+    // all resource choices are fixed by Wrexer — the user only provides secrets
+    // via the wizard, which arrive in req.body.serviceEnv.
+    let pvcMount = null;
+    if (type === 'service') {
+      image    = 'alpine/openclaw:latest';
+      port     = 18789;
+      planId   = 'db-small'; // same plan tier as databases — has 5Gi storage built-in
+      replicas = 1;
+      alias    = undefined; // aliases not supported for services
+
+      // User-supplied secrets come through serviceEnv from the wizard
+      const serviceEnv = req.body.serviceEnv || {};
+      const apiBase = process.env.FRONTEND_URL
+        ? `${process.env.FRONTEND_URL}/api`
+        : `https://${process.env.BASE_DOMAIN || 'wrexer.com'}/api`;
+
+      env = [
+        { name: 'WREXER_API_URL',     value: apiBase },
+        { name: 'WREXER_AGENT_TOKEN', value: user.agent_token || '' },
+        { name: 'WREXER_NAMESPACE',   value: `user-${user.id}` },
+        ...Object.entries(serviceEnv).map(([k, v]) => ({ name: k, value: String(v) })),
+      ];
+
+      command = null;
+      args    = null;
+      pvcMount = null; // set after shortId is known below
+    }
+    // ─────────────────────────────────────────────────────────────────────────
 
     // Sanitize name for k8s (lowercase, alphanumeric and hyphens only)
     const sanitizedName = name.toLowerCase().replace(/[^a-z0-9]/g, '-').replace(/-+/g, '-').replace(/^-|-$/g, '');
@@ -76,7 +108,20 @@ export const createApp = async (req, res) => {
         containerPort = detected || 80;
       }
     }
+
+    // Service pods always use the nginx sidecar (OpenClaw binds to 127.0.0.1 internally)
+    if (type === 'service') loopbackBind = true;
+
     const servicePort = 80;
+
+    // ── Service: prevent duplicate workspace ─────────────────────────────────
+    if (type === 'service') {
+      const existingServices = await listAppsByUserId(user.id, 'service');
+      if (existingServices.length > 0) {
+        return res.status(409).json({ error: 'You already have an OpenClaw Workspace. Only one is allowed per account.' });
+      }
+    }
+    // ─────────────────────────────────────────────────────────────────────────
 
     const appId = uuidv4();
     const shortId = appId.split('-')[0];
@@ -94,6 +139,23 @@ export const createApp = async (req, res) => {
 
     const resourceName = `app-${shortId}`;
 
+    // ── Service: set PVC mount now that shortId is known ──────────────────────
+    if (type === 'service') {
+      pvcMount = { claimName: `ws-pvc-${shortId}`, mountPath: '/workspace' };
+    }
+    // ─────────────────────────────────────────────────────────────────────────
+
+    // ── Service: storage rate + combined billing (mirrors databases) ─────────
+    let storageHourlyRate = 0;
+    let combinedPodRate = plan.price_per_hour;
+    if (type === 'service') {
+      const storageGB = parseInt(plan.storage?.replace('Gi', '') || '0');
+      storageHourlyRate = storageGB * 3; // 3 paise per GB/hr (same as databases)
+      combinedPodRate = plan.price_per_hour + storageHourlyRate;
+      pvcMount = { claimName: `ws-pvc-${shortId}`, mountPath: '/workspace' };
+    }
+    // ─────────────────────────────────────────────────────────────────────────
+
     // 1. Insert stopped app record first
     await insertApp({
       id: appId,
@@ -109,18 +171,22 @@ export const createApp = async (req, res) => {
       args,
       replicas: finalReplicas,
       loopbackBind,
+      type,
+      storage: type === 'service' ? plan.storage : null,
+      storage_hourly_rate: storageHourlyRate,
     });
 
-    // 2. Start billing (reserves 1 hour, sets status to 'running')
-    if (plan.price_per_hour > 0) {
+    // 2. Start billing — services use combined rate (pod + storage) like databases
+    const billingRate = type === 'service' ? combinedPodRate : plan.price_per_hour;
+    if (billingRate > 0) {
       try {
-        await startPodBilling(appId, user.id, plan.price_per_hour, undefined, finalReplicas);
+        // For services: reserve=combinedRate, hourly_rate stored = pod rate only (storage is separate)
+        await startPodBilling(appId, user.id, billingRate, plan.price_per_hour, finalReplicas);
       } catch (err) {
         await deleteAppById(appId);
         return res.status(402).json({ error: err.message });
       }
     } else {
-      // For free plan, just mark it as running in DB
       const now = Math.floor(Date.now() / 1000);
       await db.query(
         "UPDATE apps SET status = 'running', started_at = $1, last_billed_at = $2 WHERE id = $3",
@@ -142,6 +208,11 @@ export const createApp = async (req, res) => {
         hasRegistrySecret = true;
       }
 
+      // Service (OpenClaw): create workspace PVC before the Deployment
+      if (type === 'service' && pvcMount) {
+        await k8sService.createPVC({ namespace, name: pvcMount.claimName, size: plan.storage || '5Gi' });
+      }
+
       const { serviceTargetPort } = await k8sService.createDeployment({
         name: resourceName,
         namespace,
@@ -154,6 +225,7 @@ export const createApp = async (req, res) => {
         replicas: finalReplicas,
         hasRegistrySecret,
         loopbackBind,
+        pvcMount,
       });
       await k8sService.createService({
         name: resourceName,
@@ -164,7 +236,11 @@ export const createApp = async (req, res) => {
       await k8sService.createIngress({ name: resourceName, namespace, host, port: servicePort });
     } catch (k8sErr) {
       logger.error('K8s creation failed, rolling back', k8sErr);
-      await killAppCompletely({ id: appId, namespace, type: 'app' }).catch(() => { });
+      // Also clean up the PVC if we created one
+      if (type === 'service' && pvcMount) {
+        await k8sService.deleteNamespacedPVC(pvcMount.claimName, namespace).catch(() => {});
+      }
+      await killAppCompletely({ id: appId, namespace, type }).catch(() => { });
       throw new Error(`Cloud deployment failed: ${k8sErr.message}`);
     }
 
@@ -192,7 +268,22 @@ export const createApp = async (req, res) => {
 
 export const listApps = async (req, res) => {
   try {
-    const apps = await listAppsByUserId(req.user.id, 'app');
+    // Fetch both regular apps AND managed services in one call.
+    // The frontend filters by app.type to split them into the correct pages.
+    const { rows } = await db.query(
+      "SELECT * FROM apps WHERE user_id = $1 AND type IN ('app','service') AND status != 'deleted' ORDER BY created_at DESC",
+      [req.user.id]
+    );
+    const apps = rows.map(app => {
+      try {
+        return {
+          ...app,
+          env:     app.env     ? JSON.parse(app.env)     : null,
+          command: app.command ? JSON.parse(app.command) : null,
+          args:    app.args    ? JSON.parse(app.args)    : null,
+        };
+      } catch { return app; }
+    });
 
     // Sync status, metrics, and internal IP with k8s for each app.
     // All k8s reads hit the 10s TTL cache so this is safe at any poll frequency.
@@ -229,6 +320,149 @@ export const listApps = async (req, res) => {
 
     res.json(syncedApps);
   } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+};
+
+export const stopService = async (req, res) => {
+  try {
+    const app = await getAppById(req.params.id);
+    if (!app || app.user_id !== req.user.id || app.type !== 'service') {
+      return res.status(404).json({ error: 'Service not found' });
+    }
+    if (app.status === 'stopped') {
+      return res.status(400).json({ error: 'Service is already stopped' });
+    }
+
+    const shortId = app.id.split('-')[0];
+    const resourceName = `app-${shortId}`;
+
+    // Delete deployment + service (mirrors stopDatabase). PVC is preserved.
+    // Ingress stays so the URL remains valid (503 while stopped).
+    await k8sService.deleteNamespacedDeployment(resourceName, app.namespace);
+    await k8sService.deleteNamespacedService(resourceName, app.namespace);
+
+    // stopPodBilling is aware of type='service' → retains storage reserve
+    await stopPodBilling(app.id);
+    await updateAppDetails(app.id, { status: 'stopped' });
+    res.json({ status: 'stopped' });
+  } catch (err) {
+    logger.error('stopService error', err);
+    res.status(500).json({ error: err.message });
+  }
+};
+
+export const startService = async (req, res) => {
+  try {
+    const app = await getAppById(req.params.id);
+    if (!app || app.user_id !== req.user.id || app.type !== 'service') {
+      return res.status(404).json({ error: 'Service not found' });
+    }
+    if (app.status === 'running') {
+      return res.status(400).json({ error: 'Service is already running' });
+    }
+
+    const plan = await getPlanById(app.plan_id);
+    if (!plan) return res.status(400).json({ error: 'Plan not found' });
+
+    const combinedRate = plan.price_per_hour + (app.storage_hourly_rate || 0);
+
+    // Balance check (combined pod + storage reserve)
+    if (combinedRate > 0 && req.user.balance < combinedRate) {
+      return res.status(402).json({
+        error: `Insufficient balance. ${plan.name} requires ₹${(combinedRate / 100).toFixed(2)} (1 hr reserve) to restart.`
+      });
+    }
+
+    const shortId = app.id.split('-')[0];
+    const resourceName = `app-${shortId}`;
+    const pvcMount = { claimName: `ws-pvc-${shortId}`, mountPath: '/workspace' };
+
+    // Recreate deployment (with PVC) + service (mirrors startDatabase)
+    const { serviceTargetPort } = await k8sService.createDeployment({
+      name: resourceName,
+      namespace: app.namespace,
+      image: app.image,
+      containerPort: app.container_port,
+      plan,
+      env: app.env,
+      command: app.command,
+      args: app.args,
+      replicas: 1,
+      hasRegistrySecret: false,
+      loopbackBind: app.loopback_bind,
+      pvcMount,
+    });
+
+    await k8sService.createService({
+      name: resourceName,
+      namespace: app.namespace,
+      servicePort: 80,
+      containerPort: serviceTargetPort,
+    });
+
+    // Start combined billing (pod + storage reserve)
+    if (combinedRate > 0) {
+      await startPodBilling(app.id, req.user.id, combinedRate, plan.price_per_hour);
+    }
+
+    await updateAppDetails(app.id, { status: 'running' });
+    res.json({ status: 'running' });
+  } catch (err) {
+    logger.error('startService error', err);
+    res.status(500).json({ error: err.message });
+  }
+};
+
+/**
+ * PATCH /api/apps/:id/service-keys
+ * Update LLM / GitHub keys from the Settings UI without a full redeploy.
+ * Merges new keys into the stored env array and triggers a k8s rolling update.
+ */
+export const updateServiceKeys = async (req, res) => {
+  try {
+    const app = await getAppById(req.params.id);
+    if (!app || app.user_id !== req.user.id || app.type !== 'service') {
+      return res.status(404).json({ error: 'Service not found' });
+    }
+    if (app.status !== 'running') {
+      return res.status(400).json({ error: 'Workspace must be running to update keys' });
+    }
+
+    const { serviceEnv = {} } = req.body; // e.g. { OPENAI_API_KEY: '...', GITHUB_TOKEN: '...' }
+
+    // Merge new values into existing env array (preserve WREXER_* vars, overwrite user vars)
+    const currentEnv = app.env || [];
+    const wrexerVars = currentEnv.filter(e => e.name.startsWith('WREXER_'));
+    const newEnv = [
+      ...wrexerVars,
+      ...Object.entries(serviceEnv).map(([k, v]) => ({ name: k, value: String(v) })),
+    ];
+
+    const plan = await getPlanById(app.plan_id);
+    const shortId = app.id.split('-')[0];
+    const resourceName = `app-${shortId}`;
+    const pvcMount = { claimName: `ws-pvc-${shortId}`, mountPath: '/workspace' };
+
+    await k8sService.updateDeployment({
+      name: resourceName,
+      namespace: app.namespace,
+      image: app.image,
+      containerPort: app.container_port,
+      plan,
+      env: newEnv,
+      command: app.command,
+      args: app.args,
+      replicas: 1,
+      hasRegistrySecret: false,
+      loopbackBind: app.loopback_bind,
+      pvcMount,
+    });
+
+    await updateAppDetails(app.id, { env: newEnv });
+    res.json({ updated: true });
+  } catch (err) {
+    logger.error('updateServiceKeys error', err);
     res.status(500).json({ error: err.message });
   }
 };

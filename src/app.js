@@ -5,7 +5,7 @@ import { requestId } from './middleware/requestId.js';
 import cookieParser from 'cookie-parser';
 import authRoutes from './routes/auth.routes.js';
 import { listApiKeys } from './controllers/keys.controller.js';
-import { createApp, listApps, getApp, getAppLogs, updateApp, deleteApp, setAlias, removeAlias, checkAliasAvailability } from './controllers/apps.controller.js';
+import { createApp, listApps, getApp, getAppLogs, updateApp, deleteApp, setAlias, removeAlias, checkAliasAvailability, stopService, startService, updateServiceKeys } from './controllers/apps.controller.js';
 import { listReservedAliases, reserveAlias, assignAlias, releaseAlias } from './controllers/reservedAlias.controller.js';
 import {
   listPlans,
@@ -34,6 +34,7 @@ import { frontendUrl, baseDomain } from './config/env.js';
 import contactRoutes from './routes/contact.routes.js';
 import ticketRoutes from './routes/tickets.routes.js';
 import adminSupportRoutes from './routes/admin.support.routes.js';
+import agentRoutes from './routes/agent.routes.js';
 
 const app = express();
 const catchAsync = fn => (req, res, next) => {
@@ -93,6 +94,9 @@ api.delete('/apps/:id', requireAuth, catchAsync(deleteApp));
 api.put('/apps/:id/alias', requireAuth, catchAsync(setAlias));
 api.delete('/apps/:id/alias', requireAuth, catchAsync(removeAlias));
 api.get('/apps/alias/check', catchAsync(checkAliasAvailability)); // public — no auth
+api.post('/apps/:id/stop', requireAuth, catchAsync(stopService));
+api.post('/apps/:id/start', requireAuth, catchAsync(startService));
+api.patch('/apps/:id/service-keys', requireAuth, catchAsync(updateServiceKeys));
 
 // Reserved Alias routes
 api.get('/aliases', requireAuth, catchAsync(listReservedAliases));
@@ -124,6 +128,9 @@ api.get('/admin/keys', requireAdminKey, listApiKeys);
 api.use('/contact', contactRoutes);
 api.use('/tickets', ticketRoutes);
 api.use('/admin', adminSupportRoutes);
+
+// Agent deploy bridge (called by OpenClaw pods)
+api.use('/agent', agentRoutes);
 
 // Mount everything under /api
 app.use('/api', api);

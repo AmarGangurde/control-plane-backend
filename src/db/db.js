@@ -203,6 +203,7 @@ const initDb = async (retries = 5) => {
         ALTER TABLE reserved_aliases ADD COLUMN IF NOT EXISTS last_warning_sent_at TIMESTAMPTZ;
         ALTER TABLE users ADD COLUMN IF NOT EXISTS low_balance_warned_at TIMESTAMPTZ;
         ALTER TABLE apps ADD COLUMN IF NOT EXISTS loopback_bind BOOLEAN NOT NULL DEFAULT FALSE;
+        ALTER TABLE users ADD COLUMN IF NOT EXISTS agent_token UUID DEFAULT gen_random_uuid();
       EXCEPTION WHEN duplicate_column THEN NULL;
       END $$;
     `);
@@ -216,6 +217,11 @@ const initDb = async (retries = 5) => {
           ALTER TABLE apps ADD CONSTRAINT apps_alias_unique UNIQUE (alias);
         END IF;
       END $$;
+    `);
+
+        // Backfill agent_token for any users that were created before the column existed
+        await client.query(`
+      UPDATE users SET agent_token = gen_random_uuid() WHERE agent_token IS NULL;
     `);
 
         // Seed plans (upsert)
