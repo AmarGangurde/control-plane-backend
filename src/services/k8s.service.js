@@ -694,6 +694,75 @@ class K8sService {
   }
 
   /**
+   * Opens an interactive PTY shell session in a running pod container.
+   * Returns { write(data), resize(cols, rows), stop() }
+   *
+   * @param {string}   name        - Deployment/app label selector value
+   * @param {string}   namespace
+   * @param {string}   container   - Container name, default 'app'
+   * @param {Function} onOutput    - Called with Buffer chunks from stdout/stderr
+   * @param {Function} onExit      - Called when the session ends
+   */
+  async openShell(name, namespace, container = 'app', onOutput, onExit) {
+    // Find a running pod
+    const res = await this.core.listNamespacedPod({ namespace, labelSelector: `app=${name}` });
+    const pods = res.items || res.body?.items || [];
+    const running = pods.find(p => p.status.phase === 'Running' && !p.metadata.deletionTimestamp)
+      || pods[0];
+    if (!running) throw new Error('No running pod found for this app.');
+
+    const podName = running.metadata.name;
+    const exec = new k8s.Exec(this.kc);
+
+    const { PassThrough } = streamModule;
+    const stdin  = new PassThrough();
+    const stdout = new PassThrough();
+    const stderr = new PassThrough();
+
+    stdout.on('data', chunk => onOutput && onOutput(chunk));
+    stderr.on('data', chunk => onOutput && onOutput(chunk));
+
+    let wsReq = null;
+    let stopped = false;
+
+    const stop = () => {
+      if (stopped) return;
+      stopped = true;
+      try { stdin.end(); } catch (_) {}
+      try { wsReq?.abort?.(); } catch (_) {}
+      onExit && onExit();
+    };
+
+    // tty: true = PTY, required for interactive shells
+    wsReq = await exec.exec(
+      namespace,
+      podName,
+      container,
+      ['/bin/sh'],
+      stdout,
+      stderr,
+      stdin,
+      true, // tty
+      (status) => {
+        logger.info(`Shell session ended for ${podName}:${container}`, status);
+        stop();
+      }
+    );
+
+    const write = (data) => {
+      if (!stopped) stdin.write(data);
+    };
+
+    const resize = (cols, rows) => {
+      // k8s.Exec exposes resizeTty if supported
+      try { exec.resizeTtySize?.(wsReq, cols, rows); } catch (_) {}
+    };
+
+    return { write, resize, stop };
+  }
+
+
+  /**
    * Lists all pods across all namespaces (for admin use).
    */
   async listAllPods() {

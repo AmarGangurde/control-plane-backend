@@ -4,6 +4,8 @@ import { createAdapter } from '@socket.io/redis-adapter';
 import { pubClient, subClient } from './redis.js';
 import logger from '../utils/logger.js';
 import { frontendUrl, baseDomain } from '../config/env.js';
+import k8sService from '../services/k8s.service.js';
+import { getAppById } from '../models/app.model.js';
 
 const JWT_SECRET = process.env.JWT_SECRET;
 
@@ -80,7 +82,71 @@ export function createSocketServer(httpServer) {
     io.on('connection', (socket) => {
         logger.info(`[Socket.io] Connected: ${socket.userEmail} (admin: ${socket.isAdmin})`);
 
-        // Client joins a ticket room to receive live updates
+        // ── Shell sessions ────────────────────────────────────────────────────
+        // Map of appId → { write, resize, stop } for this socket's active shells
+        const shellSessions = new Map();
+
+        /**
+         * shell:start — open a PTY exec session into the app's container.
+         * Payload: { appId, container? }
+         */
+        socket.on('shell:start', async ({ appId, container = 'app' } = {}) => {
+            try {
+                // Ownership check — user can only shell into their own apps
+                const app = await getAppById(appId);
+                if (!app || (!socket.isAdmin && app.user_id !== socket.userId)) {
+                    socket.emit('shell:error', { appId, message: 'App not found or access denied.' });
+                    return;
+                }
+
+                // Close any existing session for this app
+                if (shellSessions.has(appId)) {
+                    shellSessions.get(appId).stop();
+                    shellSessions.delete(appId);
+                }
+
+                const shortId = app.id.split('-')[0];
+                const resourceName = app.type === 'database' ? `db-${shortId}` : `app-${shortId}`;
+
+                const session = await k8sService.openShell(
+                    resourceName,
+                    app.namespace,
+                    container,
+                    (chunk) => socket.emit('shell:output', { appId, data: chunk.toString('binary') }),
+                    () => {
+                        socket.emit('shell:exit', { appId });
+                        shellSessions.delete(appId);
+                    }
+                );
+
+                shellSessions.set(appId, session);
+                socket.emit('shell:ready', { appId });
+                logger.info(`[Shell] Opened for ${socket.userEmail} → ${resourceName}/${container}`);
+            } catch (err) {
+                logger.error('[Shell] Failed to open', err.message);
+                socket.emit('shell:error', { appId, message: err.message });
+            }
+        });
+
+        /** shell:input — write data to the PTY stdin */
+        socket.on('shell:input', ({ appId, data } = {}) => {
+            shellSessions.get(appId)?.write(data);
+        });
+
+        /** shell:resize — resize the PTY */
+        socket.on('shell:resize', ({ appId, cols, rows } = {}) => {
+            shellSessions.get(appId)?.resize(cols, rows);
+        });
+
+        /** shell:stop — close a specific shell session */
+        socket.on('shell:stop', ({ appId } = {}) => {
+            if (shellSessions.has(appId)) {
+                shellSessions.get(appId).stop();
+                shellSessions.delete(appId);
+            }
+        });
+
+        // ── Ticket rooms ──────────────────────────────────────────────────────
         socket.on('join_ticket', (ticketId) => {
             if (!ticketId) return;
             socket.join(`ticket:${ticketId}`);
@@ -93,6 +159,11 @@ export function createSocketServer(httpServer) {
         });
 
         socket.on('disconnect', () => {
+            // Clean up all open shell sessions for this socket
+            for (const [, session] of shellSessions) {
+                try { session.stop(); } catch (_) {}
+            }
+            shellSessions.clear();
             logger.info(`[Socket.io] Disconnected: ${socket.userEmail}`);
         });
     });
