@@ -780,14 +780,19 @@ class K8sService {
 
     if (loopbackBind) {
       // Nginx sidecar: listens on 0.0.0.0:SIDECAR_PORT, proxies to 127.0.0.1:containerPort
+      // NOTE: when using `nginx -c <file>`, nginx treats the file as a FULL config,
+      // so we must include the required `events {}` and `http {}` context blocks.
       const nginxConf = [
-        'server {',
-        `  listen 0.0.0.0:${SIDECAR_PORT};`,
-        '  location / {',
-        `    proxy_pass http://127.0.0.1:${containerPort};`,
-        '    proxy_set_header Host $host;',
-        '    proxy_set_header X-Real-IP $remote_addr;',
-        '    proxy_read_timeout 60s;',
+        'events {}',
+        'http {',
+        '  server {',
+        `    listen 0.0.0.0:${SIDECAR_PORT};`,
+        '    location / {',
+        `      proxy_pass http://127.0.0.1:${containerPort};`,
+        '      proxy_set_header Host $host;',
+        '      proxy_set_header X-Real-IP $remote_addr;',
+        '      proxy_read_timeout 60s;',
+        '    }',
         '  }',
         '}',
       ].join('\n');
