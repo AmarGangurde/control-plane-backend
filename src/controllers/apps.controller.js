@@ -642,8 +642,8 @@ export const setAlias = async (req, res) => {
   if (!app || app.user_id !== req.user.id) {
     return res.status(404).json({ error: 'app not found' });
   }
-  if (app.type !== 'app') {
-    return res.status(400).json({ error: 'Aliases are only supported for apps, not databases.' });
+  if (app.type !== 'app' && app.type !== 'service') {
+    return res.status(400).json({ error: 'Aliases are only supported for apps and services, not databases.' });
   }
 
   const { slug } = req.body;
