@@ -623,7 +623,7 @@ class K8sService {
     return anyRunning ? anyRunning.metadata.name : items[0].metadata.name;
   }
 
-  async getLogs(name, namespace) {
+  async getLogs(name, namespace, container = 'app') {
     try {
       const res = await this.core.listNamespacedPod({ namespace, labelSelector: `app=${name}` });
       const pods = res.items || [];
@@ -632,13 +632,22 @@ class K8sService {
       const pod = pods[0];
       const podName = pod.metadata.name;
       const phase = pod.status.phase;
-      const containerStatus = pod.status.containerStatuses?.[0];
 
-      if (phase === 'Pending' || containerStatus?.state?.waiting) {
-        return `[System] Container is starting up (${containerStatus?.state?.waiting?.reason || 'Creating'})...`;
+      // Find the target container status (default: 'app')
+      const containerStatuses = pod.status.containerStatuses || [];
+      const targetContainerStatus = containerStatuses.find(cs => cs.name === container)
+        || containerStatuses[0];
+
+      if (phase === 'Pending' || targetContainerStatus?.state?.waiting) {
+        return `[System] Container "${container}" is starting up (${targetContainerStatus?.state?.waiting?.reason || 'Creating'})...`;
       }
 
-      const logsRes = await this.core.readNamespacedPodLog({ name: podName, namespace, tailLines: 200 });
+      const logsRes = await this.core.readNamespacedPodLog({
+        name: podName,
+        namespace,
+        container,       // ← always explicit; prevents 400 on multi-container pods
+        tailLines: 200,
+      });
       return logsRes || '';
     } catch (err) {
       const body = err.response?.body || err.body;
@@ -647,6 +656,40 @@ class K8sService {
       }
       logger.error('Error fetching logs', err?.message || err);
       return `Error fetching logs: ${err?.message || 'Unknown error'}`;
+    }
+  }
+
+  /**
+   * Returns sidecar container info for the first matching pod.
+   * { hasSidecar: bool, sidecarReady: bool }
+   */
+  async getSidecarStatus(name, namespace) {
+    const cacheKey = `sidecar:${namespace}/${name}`;
+    const cached = cacheGet(cacheKey);
+    if (cached !== undefined) return cached;
+
+    try {
+      const res = await this.core.listNamespacedPod({ namespace, labelSelector: `app=${name}` });
+      const pods = res.items || res.body?.items || [];
+      if (!pods.length) {
+        const result = { hasSidecar: false, sidecarReady: false };
+        cacheSet(cacheKey, result, 4000);
+        return result;
+      }
+
+      const pod = pods[0];
+      const containerStatuses = pod.status?.containerStatuses || [];
+      const sidecarStatus = containerStatuses.find(cs => cs.name === 'proxy-sidecar');
+
+      const result = {
+        hasSidecar: !!sidecarStatus,
+        sidecarReady: sidecarStatus?.ready === true,
+      };
+      cacheSet(cacheKey, result, 4000);
+      return result;
+    } catch (err) {
+      logger.error('Error fetching sidecar status', err?.message || err);
+      return { hasSidecar: false, sidecarReady: false };
     }
   }
 

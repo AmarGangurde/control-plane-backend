@@ -200,10 +200,11 @@ export const listApps = async (req, res) => {
       const shortId = app.id.split('-')[0];
       const resourceName = `app-${shortId}`;
 
-      const [currentStatus, metrics, internalData] = await Promise.all([
+      const [currentStatus, metrics, internalData, sidecarStatus] = await Promise.all([
         k8sService.getAppStatus(resourceName, app.namespace),
         k8sService.getPodMetrics(app.namespace, resourceName),
         k8sService.getInternalIP(resourceName, app.namespace),
+        app.loopback_bind ? k8sService.getSidecarStatus(resourceName, app.namespace) : Promise.resolve({ hasSidecar: false, sidecarReady: false }),
       ]);
 
       const internalIp = internalData?.ip || null;
@@ -212,7 +213,7 @@ export const listApps = async (req, res) => {
 
       // If k8s has no pods yet (unknown) — trust the DB status.
       if (currentStatus === 'unknown') {
-        return { ...app, internalIp, internalPort, containerPort, metrics: metrics || { cpu: '0', memory: '0' } };
+        return { ...app, internalIp, internalPort, containerPort, metrics: metrics || { cpu: '0', memory: '0' }, ...sidecarStatus };
       }
 
       return {
@@ -222,6 +223,7 @@ export const listApps = async (req, res) => {
         internalPort,
         containerPort,
         metrics: metrics || { cpu: '0', memory: '0' },
+        ...sidecarStatus,
       };
     }));
 
@@ -248,7 +250,10 @@ export const getApp = async (req, res) => {
     const internalIp = internalData?.ip || null;
     const internalPort = internalData?.port || null;
     const containerPort = internalData?.targetPort || null;
-    res.json({ ...app, status, metrics, internalIp, internalPort, containerPort });
+    const sidecarStatus = app.loopback_bind
+      ? await k8sService.getSidecarStatus(resourceName, app.namespace)
+      : { hasSidecar: false, sidecarReady: false };
+    res.json({ ...app, status, metrics, internalIp, internalPort, containerPort, ...sidecarStatus });
   } catch (err) {
     logger.error('Error fetching app details', err?.message || err);
     res.status(500).json({ error: 'Failed to fetch app details' });
@@ -265,7 +270,9 @@ export const getAppLogs = async (req, res) => {
 
     const shortId = app.id.split('-')[0];
     const resourceName = app.type === 'database' ? `db-${shortId}` : `app-${shortId}`;
-    const logs = await k8sService.getLogs(resourceName, app.namespace);
+    // Default to 'app' container; tenants can request 'proxy-sidecar' via ?container=proxy-sidecar
+    const container = req.query.container || 'app';
+    const logs = await k8sService.getLogs(resourceName, app.namespace, container);
     res.json({ logs });
   } catch (err) {
     logger.error('Error fetching app logs', err?.message || err);
