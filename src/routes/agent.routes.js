@@ -1,14 +1,26 @@
 /**
  * agent.routes.js
  *
- * Routes called by OpenClaw agent pods running inside user namespaces.
- * Auth is via a per-user agent_token (NOT a user JWT session).
+ * Routes called by OpenClaw pods via the wrexer CLI.
+ * Auth: Bearer <agent_token> (per-user UUID stored in users.agent_token).
  */
 
 import express from 'express';
 import db from '../db/db.js';
 import logger from '../utils/logger.js';
 import { agentDeploy } from '../controllers/agentDeploy.controller.js';
+import {
+  agentGetContext,
+  agentEstimate,
+  agentListApps,
+  agentListDatabases,
+  agentDatabaseCreds,
+  agentCreateDatabase,
+  agentStopApp,
+  agentDeleteApp,
+  agentStopDatabase,
+  agentDeleteDatabase,
+} from '../controllers/agent.controller.js';
 
 const router = express.Router();
 
@@ -41,7 +53,23 @@ async function agentAuthMiddleware(req, res, next) {
   }
 }
 
-// POST /api/agent/deploy — trigger a Wrexer app deployment from inside a pod
-router.post('/deploy', agentAuthMiddleware, agentDeploy);
+const wrap = fn => (req, res, next) => Promise.resolve(fn(req, res, next)).catch(next);
+
+// ── Context & Estimation ────────────────────────────────────────────────────
+router.get('/context',  agentAuthMiddleware, wrap(agentGetContext));
+router.post('/estimate', agentAuthMiddleware, wrap(agentEstimate));
+
+// ── App deployment ──────────────────────────────────────────────────────────
+router.post('/deploy',       agentAuthMiddleware, wrap(agentDeploy));
+router.get('/apps',          agentAuthMiddleware, wrap(agentListApps));
+router.post('/apps/:id/stop', agentAuthMiddleware, wrap(agentStopApp));
+router.delete('/apps/:id',   agentAuthMiddleware, wrap(agentDeleteApp));
+
+// ── Database provisioning ───────────────────────────────────────────────────
+router.post('/database',              agentAuthMiddleware, wrap(agentCreateDatabase));
+router.get('/databases',              agentAuthMiddleware, wrap(agentListDatabases));
+router.get('/databases/:id/creds',    agentAuthMiddleware, wrap(agentDatabaseCreds));
+router.post('/databases/:id/stop',    agentAuthMiddleware, wrap(agentStopDatabase));
+router.delete('/databases/:id',       agentAuthMiddleware, wrap(agentDeleteDatabase));
 
 export default router;

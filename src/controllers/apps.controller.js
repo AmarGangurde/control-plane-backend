@@ -33,7 +33,7 @@ export const createApp = async (req, res) => {
     // via the wizard, which arrive in req.body.serviceEnv.
     let pvcMount = null;
     if (type === 'service') {
-      image    = 'alpine/openclaw:latest';
+      image    = 'ghcr.io/amargangurde/openclaw:latest';
       port     = 18789;
       planId   = 'db-small'; // same plan tier as databases — has 5Gi storage built-in
       replicas = 1;
