@@ -52,6 +52,11 @@ export const createApp = async (req, res) => {
         ...Object.entries(serviceEnv).map(([k, v]) => ({ name: k, value: String(v) })),
       ];
 
+      if (user.docker_username && user.docker_token) {
+        env.push({ name: 'DOCKER_USERNAME', value: user.docker_username });
+        env.push({ name: 'DOCKER_PASSWORD', value: user.docker_token });
+      }
+
       command = null;
       args    = null;
       pvcMount = null; // set after shortId is known below
@@ -378,6 +383,13 @@ export const startService = async (req, res) => {
     const resourceName = `app-${shortId}`;
     const pvcMount = { claimName: `ws-pvc-${shortId}`, mountPath: '/workspace' };
 
+    const baseEnv = app.env || [];
+    const newEnv = baseEnv.filter(e => e.name !== 'DOCKER_USERNAME' && e.name !== 'DOCKER_PASSWORD');
+    if (req.user.docker_username && req.user.docker_token) {
+      newEnv.push({ name: 'DOCKER_USERNAME', value: req.user.docker_username });
+      newEnv.push({ name: 'DOCKER_PASSWORD', value: req.user.docker_token });
+    }
+
     // Recreate deployment (with PVC) + service (mirrors startDatabase)
     const { serviceTargetPort } = await k8sService.createDeployment({
       name: resourceName,
@@ -385,7 +397,7 @@ export const startService = async (req, res) => {
       image: app.image,
       containerPort: app.container_port,
       plan,
-      env: app.env,
+      env: newEnv,
       command: app.command,
       args: app.args,
       replicas: 1,
@@ -406,7 +418,7 @@ export const startService = async (req, res) => {
       await startPodBilling(app.id, req.user.id, combinedRate, plan.price_per_hour);
     }
 
-    await updateAppDetails(app.id, { status: 'running' });
+    await updateAppDetails(app.id, { status: 'running', env: JSON.stringify(newEnv) });
     res.json({ status: 'running' });
   } catch (err) {
     logger.error('startService error', err);
