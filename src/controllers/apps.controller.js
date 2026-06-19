@@ -231,6 +231,7 @@ export const createApp = async (req, res) => {
         hasRegistrySecret,
         loopbackBind,
         pvcMount,
+        enableDinD: type === 'service',
       });
       await k8sService.createService({
         name: resourceName,
@@ -404,6 +405,7 @@ export const startService = async (req, res) => {
       hasRegistrySecret: false,
       loopbackBind: app.loopback_bind,
       pvcMount,
+      enableDinD: true, // startService is only for type === 'service'
     });
 
     await k8sService.createService({
@@ -469,6 +471,7 @@ export const updateServiceKeys = async (req, res) => {
       hasRegistrySecret: false,
       loopbackBind: app.loopback_bind,
       pvcMount,
+      enableDinD: true, // updateServiceKeys is only for type === 'service'
     });
 
     await updateAppDetails(app.id, { env: newEnv });

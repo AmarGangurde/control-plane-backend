@@ -218,8 +218,8 @@ class K8sService {
 
   // ── Deployments ────────────────────────────────────────────────────────────
 
-  async createDeployment({ name, namespace, image, containerPort, plan, env, command, args, replicas = 1, hasRegistrySecret = false, loopbackBind = false, pvcMount = null }) {
-    const spec = this._buildPodSpec({ image, containerPort, plan, env, command, args, hasRegistrySecret, loopbackBind, pvcMount });
+  async createDeployment({ name, namespace, image, containerPort, plan, env, command, args, replicas = 1, hasRegistrySecret = false, loopbackBind = false, pvcMount = null, enableDinD = false }) {
+    const spec = this._buildPodSpec({ image, containerPort, plan, env, command, args, hasRegistrySecret, loopbackBind, pvcMount, enableDinD });
     // If a sidecar was injected, route the Service to its port instead
     const serviceTargetPort = spec._sidecarPort || containerPort;
     delete spec._sidecarPort; // clean k8s-incompatible field before sending
@@ -246,7 +246,7 @@ class K8sService {
     return { serviceTargetPort };
   }
 
-  async updateDeployment({ name, namespace, image, containerPort, plan, env, command, args, replicas, hasRegistrySecret = false, loopbackBind = false, pvcMount = null }) {
+  async updateDeployment({ name, namespace, image, containerPort, plan, env, command, args, replicas, hasRegistrySecret = false, loopbackBind = false, pvcMount = null, enableDinD = false }) {
     cacheInvalidate(namespace, name);
     const current = await withRetry(
       () => this.apps.readNamespacedDeployment({ name, namespace }),
@@ -263,6 +263,7 @@ class K8sService {
       hasRegistrySecret,
       loopbackBind,
       pvcMount,
+      enableDinD,
     });
     delete newSpec._sidecarPort;
 
@@ -851,7 +852,7 @@ class K8sService {
 
   // ── Private helpers ─────────────────────────────────────────────────────────
 
-  _buildPodSpec({ image, containerPort, plan, env, command, args, hasRegistrySecret = false, loopbackBind = false, pvcMount = null }) {
+  _buildPodSpec({ image, containerPort, plan, env, command, args, hasRegistrySecret = false, loopbackBind = false, pvcMount = null, enableDinD = false }) {
     const cpuRequest = plan?.cpu_request || '10m';
     const cpuLimit = plan?.cpu || '100m';
     const memoryRequest = plan?.memory_request || plan?.memory || '128Mi';
@@ -949,6 +950,23 @@ class K8sService {
       podSpec.volumes.push({ name: 'workspace', persistentVolumeClaim: { claimName: pvcMount.claimName } });
       podSpec.containers[0].volumeMounts = podSpec.containers[0].volumeMounts || [];
       podSpec.containers[0].volumeMounts.push({ name: 'workspace', mountPath: pvcMount.mountPath });
+    }
+
+    if (enableDinD) {
+      podSpec.containers.push({
+        name: 'dind',
+        image: 'docker:24-dind',
+        securityContext: { privileged: true },
+        env: [
+          { name: 'DOCKER_TLS_CERTDIR', value: '' }
+        ],
+        volumeMounts: [{ name: 'dind-storage', mountPath: '/var/lib/docker' }]
+      });
+      podSpec.volumes = podSpec.volumes || [];
+      podSpec.volumes.push({ name: 'dind-storage', emptyDir: {} });
+
+      podSpec.containers[0].env = podSpec.containers[0].env || [];
+      podSpec.containers[0].env.push({ name: 'DOCKER_HOST', value: 'tcp://127.0.0.1:2375' });
     }
 
     return podSpec;
