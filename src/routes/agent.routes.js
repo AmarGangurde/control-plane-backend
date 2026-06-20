@@ -20,6 +20,7 @@ import {
   agentDeleteApp,
   agentStopDatabase,
   agentDeleteDatabase,
+  agentGetAppLogs,
 } from '../controllers/agent.controller.js';
 
 const router = express.Router();
@@ -62,6 +63,7 @@ router.post('/estimate', agentAuthMiddleware, wrap(agentEstimate));
 // ── App deployment ──────────────────────────────────────────────────────────
 router.post('/deploy',       agentAuthMiddleware, wrap(agentDeploy));
 router.get('/apps',          agentAuthMiddleware, wrap(agentListApps));
+router.get('/apps/:id/logs', agentAuthMiddleware, wrap(agentGetAppLogs));
 router.post('/apps/:id/stop', agentAuthMiddleware, wrap(agentStopApp));
 router.delete('/apps/:id',   agentAuthMiddleware, wrap(agentDeleteApp));
 

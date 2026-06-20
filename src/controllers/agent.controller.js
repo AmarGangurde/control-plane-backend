@@ -351,3 +351,28 @@ export const agentDeleteDatabase = async (req, res) => {
     res.status(500).json({ error: err.message });
   }
 };
+
+// ── GET /api/agent/apps/:id/logs ─────────────────────────────────────────────
+export const agentGetAppLogs = async (req, res) => {
+  try {
+    const app = await getAppById(req.params.id);
+    if (!app || app.user_id !== req.user.id) {
+      return res.status(404).json({ error: 'App or database not found' });
+    }
+    if (app.status === 'deleted') {
+      return res.status(404).json({ error: 'Resource deleted' });
+    }
+
+    const shortId = app.id.split('-')[0];
+    const isDb = app.type === 'database';
+    const resName = isDb ? `db-${shortId}` : `app-${shortId}`;
+    const containerName = isDb ? 'postgres' : 'app';
+
+    const logs = await k8sService.getLogs(resName, app.namespace, containerName);
+    res.json({ logs });
+  } catch (err) {
+    logger.error('agentGetAppLogs error', err);
+    res.status(500).json({ error: err.message });
+  }
+};
+

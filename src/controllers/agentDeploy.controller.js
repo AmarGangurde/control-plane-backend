@@ -29,7 +29,7 @@ import * as emailService from '../services/email.service.js';
 export const agentDeploy = async (req, res) => {
   try {
     const user = req.user; // resolved by agentAuthMiddleware
-    const { image, port, name, planId = 'p-small' } = req.body;
+    const { image, port, name, planId = 'p-small', env } = req.body;
 
     if (!image || !name) {
       return res.status(400).json({ error: 'image and name are required' });
@@ -98,7 +98,7 @@ export const agentDeploy = async (req, res) => {
       userId: user.id,
       planId: plan.id,
       containerPort,
-      env: null,
+      env: env || null,
       command: null,
       args: null,
       replicas: 1,
@@ -136,7 +136,7 @@ export const agentDeploy = async (req, res) => {
         image,
         containerPort,
         plan,
-        env: null,
+        env: env || null,
         command: null,
         args: null,
         replicas: 1,
