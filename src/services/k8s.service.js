@@ -944,7 +944,7 @@ class K8sService {
     }
 
     // Attach a PVC volume + volumeMount to the first (app) container.
-    // Used by service pods (e.g. OpenClaw) that need persistent workspace storage.
+    // Used by service pods (e.g. WrexForge) that need persistent workspace storage.
     if (pvcMount && pvcMount.claimName && pvcMount.mountPath) {
       podSpec.volumes = podSpec.volumes || [];
       podSpec.volumes.push({ name: 'workspace', persistentVolumeClaim: { claimName: pvcMount.claimName } });

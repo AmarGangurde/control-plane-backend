@@ -1,7 +1,7 @@
 /**
  * agent.routes.js
  *
- * Routes called by OpenClaw pods via the wrexer CLI.
+ * Routes called by WrexForge pods via the wrexer CLI.
  * Auth: Bearer <agent_token> (per-user UUID stored in users.agent_token).
  */
 
@@ -28,7 +28,7 @@ const router = express.Router();
 /**
  * Middleware: resolves the user from the Bearer agent_token header.
  * The token is the UUID stored in users.agent_token, injected into each
- * OpenClaw pod as the WREXER_AGENT_TOKEN environment variable.
+ * WrexForge pod as the WREXER_AGENT_TOKEN environment variable.
  */
 async function agentAuthMiddleware(req, res, next) {
   const authHeader = req.headers.authorization || '';

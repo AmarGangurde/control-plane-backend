@@ -31,7 +31,7 @@ export const killAppCompletely = async (app) => {
             return true;
         }
 
-        // Service pods (OpenClaw): settle billing then delete everything including workspace PVC
+        // Service pods (WrexForge): settle billing then delete everything including workspace PVC
         if (app.type === 'service') {
             await stopPodBilling(app.id, true).catch(() => {});
             const wsPvcName = `ws-pvc-${shortId}`;
@@ -40,7 +40,7 @@ export const killAppCompletely = async (app) => {
             await k8sService.deleteNamespacedIngress(resourceName, app.namespace);
             await k8sService.deleteNamespacedPVC(wsPvcName, app.namespace);
             await db.query("UPDATE apps SET status = 'deleted' WHERE id = $1", [app.id]);
-            logger.info('Service (OpenClaw) workspace destroyed', { id: app.id });
+            logger.info('Service (WrexForge) workspace destroyed', { id: app.id });
             return true;
         }
 

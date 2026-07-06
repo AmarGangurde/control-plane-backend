@@ -1,7 +1,7 @@
 /**
  * agentDeploy.controller.js
  *
- * Called by OpenClaw pods via:
+ * Called by WrexForge pods via:
  *   POST /api/agent/deploy
  *   Authorization: Bearer <agent_token>
  *

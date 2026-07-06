@@ -1,7 +1,7 @@
 /**
  * agent.controller.js
  *
- * All handlers for routes called by OpenClaw pods via the wrexer CLI.
+ * All handlers for routes called by WrexForge pods via the wrexer CLI.
  * Auth: Bearer <agent_token> (resolved by agentAuthMiddleware in agent.routes.js)
  */
 

@@ -1,5 +1,5 @@
 -- Migration: Add agent_token column to users table
--- This token is injected into OpenClaw pods so they can call back to Wrexer's /api/agent/deploy
+-- This token is injected into WrexForge pods so they can call back to Wrexer's /api/agent/deploy
 
 ALTER TABLE users ADD COLUMN IF NOT EXISTS agent_token UUID DEFAULT gen_random_uuid();
 

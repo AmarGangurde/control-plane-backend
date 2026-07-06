@@ -129,7 +129,7 @@ api.use('/contact', contactRoutes);
 api.use('/tickets', ticketRoutes);
 api.use('/admin', adminSupportRoutes);
 
-// Agent deploy bridge (called by OpenClaw pods)
+// Agent deploy bridge (called by WrexForge pods)
 api.use('/agent', agentRoutes);
 
 // Mount everything under /api
