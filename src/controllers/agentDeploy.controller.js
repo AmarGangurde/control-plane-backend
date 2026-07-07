@@ -39,8 +39,19 @@ export const agentDeploy = async (req, res) => {
     const sanitizedName = name
       .toLowerCase()
       .replace(/[^a-z0-9]/g, '-')
-      .replace(/-+/g, '-')
       .replace(/^-|-$/g, '');
+
+    // ── Enforce unique app name per user ─────────────────────────────────────
+    const { rows: existingByName } = await db.query(
+      "SELECT id FROM apps WHERE user_id = $1 AND name = $2 AND status != 'deleted' AND type != 'database'",
+      [user.id, name]
+    );
+    if (existingByName.length > 0) {
+      return res.status(409).json({
+        error: `App "${name}" already exists. Use "wrexer update app ${name} --image <new-image>" to update it, or delete it first.`
+      });
+    }
+    // ─────────────────────────────────────────────────────────────────────────
 
     const plan = await getPlanById(planId);
     if (!plan) {

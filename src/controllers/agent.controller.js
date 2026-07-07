@@ -194,6 +194,18 @@ export const agentCreateDatabase = async (req, res) => {
 
     if (!name) return res.status(400).json({ error: 'name is required' });
 
+    // ── Enforce unique DB name per user ───────────────────────────────────
+    const { rows: existingByName } = await db.query(
+      "SELECT id FROM apps WHERE user_id = $1 AND name = $2 AND status != 'deleted' AND type = 'database'",
+      [user.id, name]
+    );
+    if (existingByName.length > 0) {
+      return res.status(409).json({
+        error: `Database "${name}" already exists. Use a different name or delete the existing one first.`
+      });
+    }
+    // ─────────────────────────────────────────────────────────────────────
+
     const plan = await getPlanById(planId);
     if (!plan || !plan.storage) return res.status(400).json({ error: `Invalid db plan: ${planId}` });
 
