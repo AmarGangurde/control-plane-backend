@@ -60,10 +60,13 @@ const wrap = fn => (req, res, next) => Promise.resolve(fn(req, res, next)).catch
 router.get('/context',  agentAuthMiddleware, wrap(agentGetContext));
 router.post('/estimate', agentAuthMiddleware, wrap(agentEstimate));
 
+import { updateApp } from '../controllers/apps.controller.js';
+
 // ── App deployment ──────────────────────────────────────────────────────────
 router.post('/deploy',       agentAuthMiddleware, wrap(agentDeploy));
 router.get('/apps',          agentAuthMiddleware, wrap(agentListApps));
 router.get('/apps/:id/logs', agentAuthMiddleware, wrap(agentGetAppLogs));
+router.patch('/apps/:id',    agentAuthMiddleware, wrap(updateApp));
 router.post('/apps/:id/stop', agentAuthMiddleware, wrap(agentStopApp));
 router.delete('/apps/:id',   agentAuthMiddleware, wrap(agentDeleteApp));
 
