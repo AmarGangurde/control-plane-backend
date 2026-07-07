@@ -872,6 +872,7 @@ class K8sService {
     const container = {
       name: 'app',
       image,
+      imagePullPolicy: 'Always',
       // When loopback sidecar is used the Service targets SIDECAR_PORT not containerPort
       ports: [{ containerPort, name: 'app-internal' }],
       resources: {
